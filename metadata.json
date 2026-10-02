@@ -1,0 +1,8 @@
+{
+  "name": "AdGuard Live TV",
+  "description": "Live TV Player con motore AdGuard integrato per il blocco di pubblicità in sovraimpressione, banner overlay, tracker e guida alla configurazione Smart TV e AdGuard Home.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

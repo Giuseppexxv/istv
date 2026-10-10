@@ -177,6 +177,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     initialStream && (initialStream.url || initialStream.externalUrl) ? initialStream : null
   );
   const [activeVideo, setActiveVideo] = useState<StremioVideo | undefined>(initialVideo);
+  const [, setAvailableStreams] = useState<StremioStream[]>([]);
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -358,48 +359,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
   }, [media.id, activeVideo?.id]);
 
-  // 5-second loading timeout: if stream doesn't start playing within 5 seconds, reload and clean everything
-  useEffect(() => {
-    if (!activeStream) return;
-    if (isPlaying) return;
-
-    const timer = setTimeout(() => {
-      if (!isPlaying) {
-        console.warn("[LiquidPlayer] Stream failed to start within 5 seconds. Reloading...");
-        
-        // Clean everything
-        if (videoRef.current) {
-          try {
-            videoRef.current.pause();
-            videoRef.current.removeAttribute('src');
-            videoRef.current.load();
-          } catch {}
-        }
-        if (hlsRef.current) {
-          try {
-            hlsRef.current.stopLoad();
-            hlsRef.current.destroy();
-            hlsRef.current = null;
-          } catch {}
-        }
-        
-        // Reset playback states
-        setIsPlaying(false);
-        setIsLoading(true);
-        setPlaybackError(null);
-        setCurrentTime(0);
-        setDuration(0);
-        setActiveCues([]);
-        setCurrentSubtitleText(null);
-        
-        // Reload stream source
-        setActiveStream(null);
-      }
-    }, 5000);
-
-    return () => clearTimeout(timer);
-  }, [activeStream, isPlaying]);
-
   // Hover Scrubber Preview
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverPosition, setHoverPosition] = useState<number>(0);
@@ -565,26 +524,11 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         }
 
         // Fetch streams
-        let streams = await stremioService.fetchStreams(media.type, streamTargetId);
+        const streams = await stremioService.fetchStreams(media.type, streamTargetId);
         if (isCancelled) return;
+        setAvailableStreams(streams || []);
 
-        if (!streams || streams.length === 0) {
-          setLoadingText('Attendi, cambio sorgente...');
-          try {
-            const secondaryStreams = await stremioService.fetchSecondaryStreams(
-              media.type,
-              streamTargetId
-            );
-            if (isCancelled) return;
-            if (secondaryStreams && secondaryStreams.length > 0) {
-              streams = secondaryStreams;
-            }
-          } catch {
-            // continue
-          }
-        }
-
-        if (streams.length > 0) {
+        if (streams && streams.length > 0) {
           const directStream = streams.find((s) => s.url && s.url.length > 0);
           const chosen = directStream || streams[0];
           setActiveStream(chosen);
@@ -596,22 +540,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         }
       } catch (err: any) {
         if (isCancelled) return;
-        setLoadingText('Attendi, cambio sorgente...');
-        try {
-          const streamTargetId = activeVideo?.id || media.id;
-          const secondaryStreams = await stremioService.fetchSecondaryStreams(
-            media.type,
-            streamTargetId
-          );
-          if (isCancelled) return;
-          if (secondaryStreams && secondaryStreams.length > 0) {
-            const directStream = secondaryStreams.find((s) => s.url && s.url.length > 0);
-            setActiveStream(directStream || secondaryStreams[0]);
-            return;
-          }
-        } catch {
-          // ignore
-        }
         setIsLoading(false);
         setPlaybackError('Impossibile stabilire la connessione con la sorgente. Riprova più tardi.');
       }
@@ -619,6 +547,12 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     if (!activeStream) {
       resolveStream();
+    } else {
+      // Pre-fetch all available streams for this media so user can switch anytime in settings
+      const targetId = activeVideo?.id || media.id;
+      stremioService.fetchStreams(media.type, targetId).then((st) => {
+        if (st && st.length > 0) setAvailableStreams(st);
+      }).catch(() => {});
     }
 
     return () => {
@@ -1225,8 +1159,8 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
           {/* Right: Volume Selector + Adatta/Riempi schermo + Fullscreen Square Button */}
           <div className="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-            {/* Selettore Volume con cursore e pallino bianco alla sinistra di Schermo Intero */}
-            <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl liquid-glass-transparent border border-white/20 shadow-md">
+            {/* Selettore Volume: slider nascosto su mobile e tablet (< lg:), visibile solo su desktop (lg:) */}
+            <div className="hidden lg:flex items-center gap-2 px-2.5 py-1.5 rounded-xl liquid-glass-transparent border border-white/20 shadow-md">
               <button
                 type="button"
                 onClick={toggleMute}
@@ -1263,11 +1197,11 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
               />
             </div>
 
-            {/* Quadrato per ampliare / Schermo intero */}
+            {/* Quadrato per ampliare / Schermo intero: nascosto su mobile e tablet, visibile solo su desktop (lg:) */}
             <button
               type="button"
               onClick={toggleFullscreen}
-              className="w-10 h-10 rounded-2xl liquid-glass-transparent hover:bg-white/25 text-white flex items-center justify-center transition-all border border-white/25 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
+              className="hidden lg:flex w-10 h-10 rounded-2xl liquid-glass-transparent hover:bg-white/25 text-white items-center justify-center transition-all border border-white/25 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
               title="Schermo intero (F)"
             >
               {isFullscreen ? (

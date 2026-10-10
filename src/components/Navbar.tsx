@@ -8,6 +8,7 @@ import {
   X,
   Radio,
   ShieldCheck,
+  Settings,
 } from 'lucide-react';
 import { ViewTab } from '../types/stremio';
 

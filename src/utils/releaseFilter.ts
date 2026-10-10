@@ -144,17 +144,6 @@ export function isAlreadyReleased(
       if (year > currentYear) {
         return false;
       }
-
-      // If the movie has the CURRENT year (or >= 2026), it MUST be actually released:
-      // On IMDb and streaming catalogs, unreleased films have NO user rating yet (votes open only upon theatrical premiere).
-      // Any movie in current year with no rating or rating 0 / N/A has not been released yet!
-      if (item.type === 'movie' && year >= currentYear) {
-        const ratingNum = parseFloat(String(item.imdbRating || '0'));
-        if (isNaN(ratingNum) || ratingNum <= 0) {
-          // No rating in current year = unreleased future movie
-          return false;
-        }
-      }
     }
   }
 

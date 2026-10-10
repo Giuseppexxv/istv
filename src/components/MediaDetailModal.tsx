@@ -247,8 +247,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           };
         });
         if (meta.type === 'series' && meta.videos && meta.videos.length > 0) {
-          const firstSeason = meta.videos[0].season || 1;
-          setSelectedSeason(firstSeason);
+          const nonZeroSeasons = meta.videos.map((v) => v.season || 1).filter((s) => s >= 1);
+          const defaultSeason = nonZeroSeasons.length > 0 ? Math.min(...nonZeroSeasons) : (meta.videos[0].season || 1);
+          setSelectedSeason(defaultSeason);
+          const firstEp = meta.videos.find((v) => (v.season || 1) === defaultSeason) || meta.videos[0];
+          // Preload first regular episode stream in background for instantaneous playback
+          stremioService.preloadStream('series', firstEp.id || `${meta.id}:${defaultSeason}:1`);
         }
       })
       .catch((err) => {
@@ -287,8 +291,16 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     if (!detail) return;
     if (detail.type === 'series') {
       const episodes = seasonsMap[selectedSeason];
-      const targetEp = episodes && episodes.length > 0 ? episodes[0] : undefined;
-      onPlayStream(detail, undefined, targetEp);
+      const targetEp =
+        (episodes && episodes.length > 0 ? episodes[0] : undefined) ||
+        (detail.videos && detail.videos.length > 0 ? detail.videos[0] : undefined);
+      const finalEp = targetEp || {
+        id: `${detail.id}:1:1`,
+        title: 'Episodio 1',
+        season: selectedSeason || 1,
+        episode: 1,
+      };
+      onPlayStream(detail, undefined, finalEp);
     } else {
       onPlayStream(detail);
     }
@@ -1090,6 +1102,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       <div
                         key={`${vid.id || 'ep'}-${vid.season || selectedSeason}-${epNum}-${vidIdx}`}
                         onClick={() => onPlayStream(detail, undefined, vid)}
+                        onMouseEnter={() => {
+                          if (vid.id) stremioService.preloadStream('series', vid.id);
+                        }}
                         className="group w-72 sm:w-84 flex-shrink-0 snap-start flex flex-col rounded-2xl liquid-glass-card border border-white/10 hover:border-purple-500/60 overflow-hidden cursor-pointer transition-all duration-300 shadow-xl hover:shadow-[0_8px_30px_rgba(168,85,247,0.35)]"
                       >
                         {/* 16:9 Episode Thumbnail */}

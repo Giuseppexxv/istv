@@ -27,10 +27,10 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [useFallbackProxy, setUseFallbackProxy] = useState<boolean>(false);
 
-  // Playback state
+  // Playback state - Starts active with full audio enabled
   const [isPlaying, setIsPlaying] = useState<boolean>(true);
-  const [isMuted, setIsMuted] = useState<boolean>(true); // default true for safe browser autoplay
-  const [volume, setVolume] = useState<number>(0.85);
+  const [isMuted, setIsMuted] = useState<boolean>(false);
+  const [volume, setVolume] = useState<number>(1);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [showControls, setShowControls] = useState<boolean>(true);
 
@@ -68,7 +68,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     const fetchDirectStream = async () => {
       try {
         const resp = await fetch(`/api/live-stream?id=${channel.id}&refresh=${playerKey > 0 ? '1' : '0'}`, {
-          signal: AbortSignal.timeout(9000),
+          signal: AbortSignal.timeout(10000),
         });
 
         if (!resp.ok) {
@@ -100,7 +100,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     };
   }, [channel.id, playerKey]);
 
-  // 2. Setup HLS.js for Native Playback
+  // 2. Setup HLS.js with resilient live buffer tuning and immediate audio playback
   useEffect(() => {
     if (useFallbackProxy || !nativeStreamUrl || !videoRef.current) {
       return;
@@ -112,14 +112,32 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       hlsRef.current = null;
     }
 
-    // Always prefer Hls.js MediaSource decoding first for Chrome, Edge, Firefox, and Android
+    // Configure video element for direct unmuted playback
+    video.muted = false;
+    video.volume = volume > 0 ? volume : 1;
+
+    // Advanced HLS.js configuration optimized for live IPTV stream reception and anti-freeze
     if (Hls.isSupported()) {
       const hls = new Hls({
         enableWorker: true,
         lowLatencyMode: true,
+        backBufferLength: 30,
+        maxBufferLength: 25,
+        maxMaxBufferLength: 50,
+        liveSyncDurationCount: 3,
+        liveMaxLatencyDurationCount: 8,
+        liveDurationInfinity: true,
+        startFragPrefetch: true,
         capLevelToPlayerSize: true,
-        maxBufferLength: 20,
-        maxMaxBufferLength: 40,
+        manifestLoadingTimeOut: 12000,
+        manifestLoadingMaxRetry: 5,
+        manifestLoadingRetryDelay: 800,
+        levelLoadingTimeOut: 12000,
+        levelLoadingMaxRetry: 5,
+        levelLoadingRetryDelay: 800,
+        fragLoadingTimeOut: 15000,
+        fragLoadingMaxRetry: 6,
+        fragLoadingRetryDelay: 800,
       });
 
       hlsRef.current = hls;
@@ -127,42 +145,50 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       hls.attachMedia(video);
 
       hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.muted = false;
+        video.volume = volume > 0 ? volume : 1;
         const p = video.play();
         if (p !== undefined) {
           playPromiseRef.current = p;
           p.then(() => {
             if (playPromiseRef.current === p) playPromiseRef.current = null;
-          }).catch(() => {
+            setIsPlaying(true);
+            setIsMuted(false);
+          }).catch((err) => {
             if (playPromiseRef.current === p) playPromiseRef.current = null;
-            setIsMuted(true);
+            console.warn('[Live TV Autoplay Blocked] Starting muted per browser policy:', err);
+            // If browser blocks initial unmuted autoplay, start muted and allow 1-tap unmute
             video.muted = true;
+            setIsMuted(true);
             const p2 = video.play();
             if (p2 !== undefined) {
               playPromiseRef.current = p2;
               p2.then(() => {
                 if (playPromiseRef.current === p2) playPromiseRef.current = null;
-              }).catch(() => {
-                if (playPromiseRef.current === p2) playPromiseRef.current = null;
-              });
+                setIsPlaying(true);
+              }).catch(() => {});
             }
           });
         }
       });
 
+      // Self-healing recovery on stream drops or temporary network glitches
       hls.on(Hls.Events.ERROR, (_event, data) => {
         if (data.fatal) {
           switch (data.type) {
             case Hls.ErrorTypes.NETWORK_ERROR:
+              console.warn('[Live TV Network Error] Reloading stream chunks...', data);
               hls.startLoad();
               break;
             case Hls.ErrorTypes.MEDIA_ERROR:
+              console.warn('[Live TV Media Error] Recovering playback...', data);
               hls.recoverMediaError();
               break;
             default:
-              console.warn('[HLS Fatal Error] Switching to fallback player:', data);
+              console.warn('[Live TV Fatal Error] Switching to stream refresh:', data);
               hls.destroy();
               hlsRef.current = null;
-              setUseFallbackProxy(true);
+              setPlayerKey((prev) => prev + 1);
               break;
           }
         }
@@ -170,24 +196,20 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       // Native Apple Safari / iOS HLS
       video.src = nativeStreamUrl;
+      video.muted = false;
+      video.volume = volume > 0 ? volume : 1;
       const p = video.play();
       if (p !== undefined) {
         playPromiseRef.current = p;
         p.then(() => {
           if (playPromiseRef.current === p) playPromiseRef.current = null;
+          setIsPlaying(true);
+          setIsMuted(false);
         }).catch(() => {
           if (playPromiseRef.current === p) playPromiseRef.current = null;
           setIsMuted(true);
           video.muted = true;
-          const p2 = video.play();
-          if (p2 !== undefined) {
-            playPromiseRef.current = p2;
-            p2.then(() => {
-              if (playPromiseRef.current === p2) playPromiseRef.current = null;
-            }).catch(() => {
-              if (playPromiseRef.current === p2) playPromiseRef.current = null;
-            });
-          }
+          video.play().catch(() => {});
         });
       }
     } else {
@@ -340,9 +362,10 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       const nextMuted = !isMuted;
       videoRef.current.muted = nextMuted;
       setIsMuted(nextMuted);
-      if (!nextMuted && videoRef.current.volume === 0) {
-        videoRef.current.volume = 0.8;
-        setVolume(0.8);
+      if (!nextMuted) {
+        const targetVol = volume > 0.05 ? volume : 0.8;
+        videoRef.current.volume = targetVol;
+        setVolume(targetVol);
       }
     }
   };
@@ -351,14 +374,23 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     const val = parseFloat(e.target.value);
     setVolume(val);
     if (videoRef.current) {
-      videoRef.current.volume = val;
       if (val === 0) {
         videoRef.current.muted = true;
         setIsMuted(true);
-      } else if (isMuted) {
+      } else {
         videoRef.current.muted = false;
+        videoRef.current.volume = val;
         setIsMuted(false);
       }
+    }
+  };
+
+  const handleContainerClick = () => {
+    resetControlsTimeout();
+    if (isMuted && videoRef.current) {
+      videoRef.current.muted = false;
+      videoRef.current.volume = volume > 0 ? volume : 1;
+      setIsMuted(false);
     }
   };
 
@@ -386,53 +418,61 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       ref={containerRef}
       onMouseMove={resetControlsTimeout}
       onTouchStart={resetControlsTimeout}
+      onClick={handleContainerClick}
       className="fixed inset-0 h-[100dvh] w-full z-50 bg-black flex flex-col items-center justify-center animate-in fade-in duration-200 select-none overflow-hidden cursor-default"
     >
-      {/* TOP FLOATING HUD: Channel Info (Left) + Actions: Reload, Fullscreen, Close (X) (Right) */}
+      {/* ================= TOP HUD BAR ================= */}
       <div
-        className={`absolute top-3 inset-x-3 sm:top-4 sm:inset-x-6 z-40 flex items-center justify-between pointer-events-auto transition-opacity duration-300 ${
-          showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
+        className={`absolute top-0 left-0 right-0 p-3 sm:p-5 bg-gradient-to-b from-black/95 via-black/50 to-transparent transition-opacity duration-300 z-40 ${
+          showControls ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
         }`}
       >
-        {/* TOP LEFT: Channel Badge */}
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-2xl bg-black/85 border border-white/20 backdrop-blur-xl shadow-2xl">
-          <Radio className="w-3.5 h-3.5 text-red-500 animate-pulse flex-shrink-0" />
-          <h2 className="text-xs sm:text-sm font-extrabold text-white truncate max-w-[180px] sm:max-w-sm">
-            {channel.name}
-          </h2>
-        </div>
+        <div className="flex items-center justify-between">
+          {/* TOP LEFT: Channel Badge & Live Indicator */}
+          <div className="flex items-center gap-2.5 sm:gap-3.5 min-w-0 max-w-[70%]">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-2xl liquid-glass-transparent border border-white/20 shadow-xl backdrop-blur-xl">
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-red-600/25 border border-red-500/40 text-red-300 text-[10px] sm:text-[11px] font-black uppercase tracking-wider shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                <span>LIVE</span>
+              </div>
+              <h2 className="font-poster-logo text-xs sm:text-sm md:text-base font-black text-white tracking-wide uppercase truncate drop-shadow-md">
+                {channel.name}
+              </h2>
+            </div>
+          </div>
 
-        {/* TOP RIGHT: Ricarica + Schermo Intero + Chiudi (X) */}
-        <div className="flex items-center gap-1.5 sm:gap-2 px-2.5 py-1.5 rounded-full bg-black/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
-          {/* Ricarica Stream */}
-          <button
-            type="button"
-            onClick={handleReload}
-            className="w-8 h-8 rounded-full bg-transparent hover:bg-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-95"
-            title="Ricarica flusso live (R)"
-          >
-            <RefreshCw className="w-4 h-4 text-white" />
-          </button>
+          {/* TOP RIGHT: Ricarica + Schermo Intero + Chiudi (X) */}
+          <div className="flex items-center gap-2 sm:gap-2.5 flex-shrink-0">
+            {/* Ricarica Stream */}
+            <button
+              type="button"
+              onClick={handleReload}
+              className="w-10 h-10 rounded-2xl liquid-glass-transparent hover:bg-white/25 text-white flex items-center justify-center transition-all border border-white/25 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
+              title="Ricarica flusso live (R)"
+            >
+              <RefreshCw className="w-4 h-4 text-white" />
+            </button>
 
-          {/* Schermo Intero */}
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="w-8 h-8 rounded-full bg-transparent hover:bg-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-95"
-            title="Schermo intero (F)"
-          >
-            {isFullscreen ? <Minimize2 className="w-4 h-4 text-white" /> : <Maximize2 className="w-4 h-4 text-white" />}
-          </button>
+            {/* Schermo Intero: nascosto su mobile e tablet, visibile solo su desktop */}
+            <button
+              type="button"
+              onClick={toggleFullscreen}
+              className="hidden lg:flex w-10 h-10 rounded-2xl liquid-glass-transparent hover:bg-white/25 text-white items-center justify-center transition-all border border-white/25 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
+              title="Schermo intero (F)"
+            >
+              {isFullscreen ? <Minimize2 className="w-4 h-4 text-white" /> : <Maximize2 className="w-4 h-4 text-white" />}
+            </button>
 
-          {/* Chiudi (X) */}
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-8 h-8 rounded-full bg-rose-600/80 hover:bg-rose-600 text-white flex items-center justify-center transition-all cursor-pointer active:scale-95 shadow-md ml-0.5"
-            title="Chiudi player (Esc)"
-          >
-            <X className="w-4 h-4 text-white" />
-          </button>
+            {/* Chiudi (X) */}
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-10 h-10 rounded-2xl liquid-glass-transparent hover:bg-rose-600 text-white flex items-center justify-center transition-all border border-white/25 cursor-pointer shadow-lg hover:scale-105 active:scale-95"
+              title="Chiudi player (Esc)"
+            >
+              <X className="w-4.5 h-4.5 text-white" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -442,7 +482,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
           <button
             type="button"
             onClick={toggleMute}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs shadow-2xl transition-all cursor-pointer active:scale-95 animate-pulse"
+            className="flex items-center gap-2.5 px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl liquid-glass-elevated border border-red-500/40 bg-gradient-to-r from-red-600/90 to-rose-600/90 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs shadow-2xl backdrop-blur-xl transition-all cursor-pointer active:scale-95 animate-pulse"
           >
             <VolumeX className="w-4 h-4 text-white" />
             <span>Tocca per attivare l'audio</span>
@@ -454,17 +494,22 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       <div className="flex-1 w-full h-full bg-black relative flex items-center justify-center overflow-hidden">
         {/* Loading Spinner */}
         {isLoadingStream && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/90 backdrop-blur-md">
-            <div className="relative w-12 h-12 flex items-center justify-center">
-              <div className="absolute inset-0 rounded-full border-4 border-red-500/20 animate-ping" />
-              <RefreshCw className="w-6 h-6 text-red-500 animate-spin" />
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 bg-black/85 backdrop-blur-md animate-in fade-in duration-200">
+            <div className="liquid-glass-elevated rounded-3xl p-6 sm:p-8 border border-white/20 shadow-2xl flex flex-col items-center gap-3.5 max-w-sm w-full mx-4 text-center">
+              <div className="relative w-14 h-14 flex items-center justify-center">
+                <div className="absolute inset-0 rounded-full border-2 border-red-500/20 animate-ping" />
+                <div className="w-12 h-12 rounded-full border-3 border-red-500 border-t-transparent animate-spin" />
+                <Radio className="w-5 h-5 text-red-500 absolute" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-poster-logo text-sm sm:text-base font-black text-white tracking-wider uppercase">
+                  {channel.name}
+                </h3>
+                <p className="text-xs text-slate-300 font-medium">
+                  Sintonizzazione canale in corso...
+                </p>
+              </div>
             </div>
-            <p className="text-xs sm:text-sm font-bold text-white tracking-wide">
-              Caricamento canale in corso...
-            </p>
-            <span className="text-[11px] text-slate-300 font-mono">
-              {channel.name} • Live TV
-            </span>
           </div>
         )}
 
@@ -507,41 +552,47 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
       {/* BOTTOM CONTROLS BAR: Play / Pause / Mute / Volume Slider */}
       {!useFallbackProxy && (
         <div
-          className={`absolute bottom-3 inset-x-3 sm:bottom-6 sm:inset-x-6 z-40 flex items-center justify-start pointer-events-auto transition-opacity duration-300 ${
+          className={`absolute bottom-3 sm:bottom-5 inset-x-3 sm:inset-x-6 z-40 flex items-center justify-start pointer-events-auto transition-opacity duration-300 ${
             showControls ? 'opacity-100' : 'opacity-0 pointer-events-none'
           }`}
         >
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
+          <div className="liquid-glass-transparent rounded-2xl px-3 py-2 sm:px-4 sm:py-2.5 border border-white/20 shadow-2xl backdrop-blur-2xl flex items-center gap-2 sm:gap-3">
             {/* Play / Pause Toggle */}
             <button
               type="button"
               onClick={togglePlay}
-              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-95"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl liquid-glass-transparent hover:bg-white/20 text-slate-200 hover:text-white flex items-center justify-center transition-all cursor-pointer active:scale-95 border border-white/20 shadow-md"
               title={isPlaying ? 'Pausa (Spazio)' : 'Riproduci (Spazio)'}
             >
-              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
             </button>
 
             {/* Mute / Unmute */}
             <button
               type="button"
               onClick={toggleMute}
-              className="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 text-white flex items-center justify-center transition-all cursor-pointer active:scale-95"
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl liquid-glass-transparent hover:bg-white/20 text-slate-200 hover:text-white flex items-center justify-center transition-all cursor-pointer active:scale-95 border border-white/20 shadow-md"
               title={isMuted ? 'Attiva audio (M)' : 'Disattiva audio (M)'}
             >
               {isMuted ? <VolumeX className="w-4 h-4 text-rose-400" /> : <Volume2 className="w-4 h-4 text-white" />}
             </button>
 
-            {/* Volume Slider */}
-            <div className="hidden sm:flex items-center w-20 px-1">
+            {/* Volume Slider: nascosto su mobile e tablet, visibile solo su desktop */}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="hidden lg:flex items-center w-20 sm:w-24 px-1"
+            >
               <input
                 type="range"
                 min="0"
                 max="1"
-                step="0.05"
+                step="0.02"
                 value={isMuted ? 0 : volume}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                onTouchStart={(e) => e.stopPropagation()}
                 onChange={handleVolumeChange}
-                className="w-full h-1 bg-white/30 rounded-lg appearance-none cursor-pointer accent-red-500"
+                className="w-full h-1 bg-white/25 rounded-lg appearance-none cursor-pointer accent-white hover:accent-red-500 transition-all"
               />
             </div>
           </div>

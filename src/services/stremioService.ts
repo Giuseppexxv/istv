@@ -19,7 +19,7 @@ export const DEFAULT_ADDONS: InstalledAddon[] = [
     id: 'topstreaming.italy',
     name: 'TOP Streaming 🇮🇹',
     version: '4.2.2',
-    description: 'Classifiche Top 10 ufficiali Italia da Netflix, Prime Video, Disney+, Apple TV+, NOW, Paramount+ e globali.',
+    description: 'Liste Top 10 dalle principali piattaforme di Streaming - Cataloghi: 8 - Lingua contenuti: it-IT',
     transportUrl: '/api/addon/topstreaming',
     enabled: true,
     isOfficial: true,
@@ -28,26 +28,26 @@ export const DEFAULT_ADDONS: InstalledAddon[] = [
       id: 'topstreaming.italy',
       name: 'TOP Streaming 🇮🇹',
       version: '4.2.2',
-      description: 'Classifiche Top 10 ufficiali Italia: Netflix, Prime Video, Disney+, Apple TV+, NOW, Paramount+ e globali.',
+      description: 'Liste Top 10 dalle principali piattaforme di Streaming - Cataloghi: 8 - Lingua contenuti: it-IT',
       types: ['movie', 'series'],
       resources: ['catalog', 'meta'],
       catalogs: [
-        { type: 'movie', id: 'popular-movie-global', name: 'Popolare - Top 10' },
-        { type: 'series', id: 'popular-series-global', name: 'Popolare - Top 10' },
-        { type: 'movie', id: 'netflix-movies-italy', name: 'Netflix - Top 10' },
-        { type: 'series', id: 'netflix-series-italy', name: 'Netflix - Top 10' },
-        { type: 'movie', id: 'amazon-prime-movies-italy', name: 'Amazon Prime Video - Top 10' },
-        { type: 'series', id: 'amazon-prime-series-italy', name: 'Amazon Prime Video - Top 10' },
-        { type: 'movie', id: 'disney-movies-italy', name: 'Disney+ - Top 10' },
-        { type: 'series', id: 'disney-series-italy', name: 'Disney+ - Top 10' },
-        { type: 'movie', id: 'apple-tv-movies-italy', name: 'Apple TV - Top 10' },
-        { type: 'series', id: 'apple-tv-series-italy', name: 'Apple TV - Top 10' },
-        { type: 'movie', id: 'now-movies-italy', name: 'NOW - Top 10' },
-        { type: 'series', id: 'now-series-italy', name: 'NOW - Top 10' },
-        { type: 'movie', id: 'paramount-plus-movies-italy', name: 'Paramount+ - Top 10' },
-        { type: 'series', id: 'paramount-plus-series-italy', name: 'Paramount+ - Top 10' },
-        { type: 'movie', id: 'hbo-max-movies-italy', name: 'HBO Max - Top 10' },
-        { type: 'series', id: 'hbo-max-series-italy', name: 'HBO Max - Top 10' },
+        { type: 'movie', id: 'netflix-movies-italy', name: 'Netflix - Top 10 Italia' },
+        { type: 'series', id: 'netflix-series-italy', name: 'Netflix - Top 10 Italia' },
+        { type: 'movie', id: 'amazon-prime-movies-italy', name: 'Amazon Prime Video - Top 10 Italia' },
+        { type: 'series', id: 'amazon-prime-series-italy', name: 'Amazon Prime Video - Top 10 Italia' },
+        { type: 'movie', id: 'hbo-max-movies-italy', name: 'HBO Max - Top 10 Italia' },
+        { type: 'series', id: 'hbo-max-series-italy', name: 'HBO Max - Top 10 Italia' },
+        { type: 'movie', id: 'disney-movies-italy', name: 'Disney+ - Top 10 Italia' },
+        { type: 'series', id: 'disney-series-italy', name: 'Disney+ - Top 10 Italia' },
+        { type: 'movie', id: 'apple-tv-movies-italy', name: 'Apple TV - Top 10 Italia' },
+        { type: 'series', id: 'apple-tv-series-italy', name: 'Apple TV - Top 10 Italia' },
+        { type: 'movie', id: 'now-movies-italy', name: 'NOW - Top 10 Italia' },
+        { type: 'series', id: 'now-series-italy', name: 'NOW - Top 10 Italia' },
+        { type: 'movie', id: 'paramount-plus-movies-italy', name: 'Paramount+ - Top 10 Italia' },
+        { type: 'series', id: 'paramount-plus-series-italy', name: 'Paramount+ - Top 10 Italia' },
+        { type: 'movie', id: 'popular-movie-global', name: 'Popolare - Top 10 Mondiale' },
+        { type: 'series', id: 'popular-series-global', name: 'Popolare - Top 10 Mondiale' },
       ],
       idPrefixes: ['tt', 'tmdb:', 'mal:'],
     },
@@ -83,17 +83,18 @@ export const DEFAULT_ADDONS: InstalledAddon[] = [
   },
   {
     id: 'official.stream',
-    name: 'Flussi Video Ufficiali',
-    version: '3.0.0',
-    description: 'Flussi video streaming in lingua italiana ad alta definizione.',
+    name: 'ToastFlix 🥪 (Ufficiale)',
+    version: '3.0.1',
+    description: 'Sorgente primaria ufficiale per flussi video streaming in lingua italiana 1080p FHD HLS.',
     transportUrl: '/api/addon/stream',
     enabled: true,
     isOfficial: true,
+    icon: 'https://toastflix.stremio-italia.eu/toast-stream-logo.png',
     manifest: {
-      id: 'official.stream',
-      name: 'Flussi Video Ufficiali',
-      version: '3.0.0',
-      description: 'Flussi video streaming in lingua italiana',
+      id: 'toastflix.addon.it',
+      name: 'ToastFlix 🥪 (Ufficiale)',
+      version: '3.0.1',
+      description: 'Flussi video streaming in lingua italiana 1080p FHD HLS',
       types: ['movie', 'series'],
       resources: ['stream'],
       catalogs: [],
@@ -223,7 +224,6 @@ class StremioService {
         const filtered = parsed.filter(
           (a) =>
             a.id !== 'community.cinemeta' &&
-            a.id !== 'toastflix.addon.it' &&
             a.id !== 'com.linvo.watchhub'
         );
 
@@ -253,14 +253,15 @@ class StremioService {
           };
         }
 
-        // Ensure official stream addon is present and configured
+        // Ensure ToastFlix official stream addon is present and configured
         const streamAddonDef = DEFAULT_ADDONS.find((a) => a.id === 'official.stream')!;
-        const hasOfficialStream = filtered.some((a) => a.id === 'official.stream');
-        if (!hasOfficialStream) {
+        const streamIdx = filtered.findIndex(
+          (a) => a.id === 'official.stream' || a.id === 'toastflix.addon.it' || a.id === 'italian.channels.stream'
+        );
+        if (streamIdx === -1) {
           filtered.push(streamAddonDef);
         } else {
-          const idx = filtered.findIndex((a) => a.id === 'official.stream');
-          filtered[idx] = {
+          filtered[streamIdx] = {
             ...streamAddonDef,
             enabled: true,
           };
@@ -486,6 +487,27 @@ class StremioService {
     }
   }
 
+  // Search movies and series across default catalogs
+  public async search(query: string): Promise<StremioMetaPreview[]> {
+    if (!query || !query.trim()) return [];
+    const q = query.trim();
+    try {
+      const [movies, series] = await Promise.all([
+        this.fetchCatalog('official.catalog', 'movie', 'top', { search: q }),
+        this.fetchCatalog('official.catalog', 'series', 'top', { search: q }),
+      ]);
+      const combined = [...movies, ...series];
+      const seen = new Set<string>();
+      return combined.filter((item) => {
+        if (!item || !item.id || seen.has(item.id)) return false;
+        seen.add(item.id);
+        return true;
+      });
+    } catch {
+      return [];
+    }
+  }
+
   // Fetch detailed meta for a movie or series with caching
   public async fetchMeta(type: string, id: string): Promise<StremioMetaDetail | null> {
     const cacheKey = `${type}_${id}`;
@@ -632,14 +654,36 @@ class StremioService {
     const getStreamScore = (s: StremioStream): number => {
       const name = (s.name || '').toLowerCase();
       const title = (s.title || '').toLowerCase();
+      const rawUrl = (s.url || '').toLowerCase();
       const hasUrl = !!s.url && s.url.trim().length > 0;
-      const isIta = title.includes('ita') || name.includes('ita') || title.includes('italiano');
-      const isHD = title.includes('1080p') || title.includes('4k') || title.includes('2160p') || name.includes('1080p');
+      const isHls =
+        rawUrl.includes('.m3u8') ||
+        rawUrl.includes('manifest') ||
+        name.includes('hls') ||
+        title.includes('hls');
+      const is1080p =
+        name.includes('1080p') ||
+        title.includes('1080p') ||
+        name.includes('fhd') ||
+        title.includes('fhd') ||
+        name.includes('1080') ||
+        title.includes('1080');
+      const isIta =
+        title.includes('🇮🇹') ||
+        name.includes('🇮🇹') ||
+        title.includes('ita') ||
+        name.includes('ita') ||
+        title.includes('italiano');
 
       let score = 0;
-      if (hasUrl) score += 1000;
-      if (isIta) score += 500;
-      if (isHD) score += 200;
+      if (hasUrl) score += 2500;
+      if (isHls) score += 2000;
+      if (is1080p) score += 1500;
+      else if (name.includes('4k') || title.includes('4k') || name.includes('2160p')) score += 1000;
+      else if (name.includes('720p') || title.includes('720p') || name.includes('hd')) score += 600;
+      if (isIta) score += 1200;
+      if (name.includes('toastflix') || name.includes('🥪')) score += 400;
+      if (name.includes('🚀') || name.includes('🎯')) score += 300;
       return score;
     };
 
@@ -662,44 +706,6 @@ class StremioService {
 
   public async fetchStreams(type: string, id: string): Promise<StremioStream[]> {
     return this.fetchStreamsProgressive(type, id);
-  }
-
-  // Secondary stream fallback from StreamViX addon
-  public async fetchSecondaryStreams(type: string, id: string): Promise<StremioStream[]> {
-    const secondaryBase =
-      'https://streamvix.hayd.uk/eyJkaXNhYmxlVml4c3JjIjp0cnVlLCJjYjAxRW5hYmxlZCI6ZmFsc2UsImd1YXJkYWhkRW5hYmxlZCI6dHJ1ZSwiZ3VhcmRhc2VyaWVFbmFibGVkIjpmYWxzZSwiZ3VhcmRvc2VyaWVFbmFibGVkIjp0cnVlLCJndWFyZGFmbGl4RW5hYmxlZCI6dHJ1ZSwiZGlzYWJsZUxpdmVUdiI6dHJ1ZSwiYW5pbWV1bml0eUVuYWJsZWQiOmZhbHNlLCJhbmltZXNhdHVybkVuYWJsZWQiOmZhbHNlLCJhbmltZXdvcmxkRW5hYmxlZCI6ZmFsc2UsImV1cm9zdHJlYW1pbmdFbmFibGVkIjpmYWxzZSwidG9vbml0YWxpYUVuYWJsZWQiOmZhbHNlLCJ0b29uRW5hYmxlZCI6ZmFsc2UsInZhdm9vTm9NZnBFbmFibGVkIjpmYWxzZSwibWVkaWFmbG93TWFzdGVyIjpmYWxzZSwidHJhaWxlckVuYWJsZWQiOmZhbHNlLCJmYXN0TW9kZSI6dHJ1ZX0=';
-    const targetUrl = `${secondaryBase}/stream/${type}/${id}.json`;
-    const proxyUrl = `/api/stremio-proxy?url=${encodeURIComponent(targetUrl)}`;
-
-    try {
-      const resp = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (Array.isArray(data.streams) && data.streams.length > 0) {
-          return data.streams.map((s: any) => ({
-            ...s,
-            name: s.name ? `StreamViX - ${s.name}` : 'StreamViX HD',
-          }));
-        }
-      }
-    } catch {
-      // Direct fetch fallback if proxy has issues
-      try {
-        const directResp = await fetch(targetUrl, { signal: AbortSignal.timeout(8000) });
-        if (directResp.ok) {
-          const data = await directResp.json();
-          if (Array.isArray(data.streams)) {
-            return data.streams.map((s: any) => ({
-              ...s,
-              name: s.name ? `StreamViX - ${s.name}` : 'StreamViX HD',
-            }));
-          }
-        }
-      } catch {
-        // Silently skip
-      }
-    }
-    return [];
   }
 
   public async fetchSubtitles(type: string, id: string): Promise<StremioSubtitle[]> {

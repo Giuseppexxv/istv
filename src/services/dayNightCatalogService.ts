@@ -28,7 +28,52 @@ let sharedRawPromise: Promise<any> | null = null;
  * Curated benchmark IDs verified against Cinemeta official metadata.
  * 100% accurate title-to-poster and episode pairings.
  */
-const CURATED_BENCHMARKS = {
+export const CURATED_BENCHMARKS = {
+  // 0. Cinema & Serie TV Italiane (100% verificate su ToastFlix & Cinemeta)
+  italian: {
+    movies: [
+      'tt21800162', // C'è ancora domani (2023)
+      'tt12680684', // È stata la mano di Dio (2021)
+      'tt4901306',  // Perfetti sconosciuti (2016)
+      'tt2358891',  // La grande bellezza (2013)
+      'tt0118799',  // La vita è bella (1997)
+      'tt0095765',  // Nuovo Cinema Paradiso (1988)
+      'tt4025514',  // Suburra (2015)
+      'tt0929425',  // Gomorra (2008)
+      'tt6768578',  // Dogman (2018)
+      'tt4218692',  // Lo chiamavano Jeeg Robot (2015)
+      'tt7853118',  // Il traditore (2019)
+      'tt2465578',  // Il capitale umano (2013)
+      'tt1895527',  // ACAB - All Cops Are Bastards (2012)
+      'tt0060196',  // Il buono, il brutto, il cattivo (1966)
+      'tt0064116',  // C'era una volta il West (1968)
+      'tt0058461',  // Per un pugno di dollari (1964)
+      'tt0059578',  // Per qualche dollaro in più (1965)
+      'tt0056801',  // 8½ (Otto e mezzo) (1963)
+      'tt0053779',  // La dolce vita (1960)
+      'tt0040522',  // Ladri di biciclette (1948)
+    ],
+    series: [
+      'tt6864602',  // Mare Fuori (2020–2025)
+      'tt2049116',  // Gomorra - La serie (2014–2021)
+      'tt7197008',  // Suburra - La serie (2017–2020)
+      'tt28019928', // Suburræterna (2023–)
+      'tt7278862',  // L'amica geniale (2018–2024)
+      'tt1262078',  // Romanzo Criminale - La serie (2008–2010)
+      'tt1034078',  // Boris (2007–2022)
+      'tt13689404', // Strappare lungo i bordi (2021)
+      'tt8440532',  // ZeroZeroZero (2020)
+      'tt3655498',  // The Young Pope (2016)
+      'tt7939218',  // Diavoli (2020–2022)
+      'tt2439344',  // 1992 (2015)
+      'tt5887224',  // 1993 (2017)
+      'tt7522300',  // 1994 (2019)
+      'tt13550882', // Blanca (2021–)
+      'tt13410712', // Christian (2022–)
+      'tt15367676', // Monterossi (2022–)
+      'tt16374026', // Call My Agent - Italia (2023–)
+    ],
+  },
   // 1. Aggiunti di Recente (2023–2026)
   recent: {
     movies: [
@@ -581,7 +626,43 @@ export function isRecentRelease(item: StremioMetaPreview): boolean {
 /**
  * Pristine metadata dictionary pairing exact IMDb IDs to canonical Italian titles, years, ratings and genres.
  */
-const BENCHMARK_METADATA: Record<string, { name: string; year: string; rating: number; genres?: string[] }> = {
+export const BENCHMARK_METADATA: Record<string, { name: string; year: string; rating: number; genres?: string[] }> = {
+  // Italian Curated Titles (Cinema & Serie TV)
+  'tt21800162': { name: "C'è ancora domani", year: '2023', rating: 7.7, genres: ['Commedia', 'Dramma'] },
+  'tt6864602': { name: 'Mare Fuori', year: '2020', rating: 7.4, genres: ['Dramma', 'Crime'] },
+  'tt2049116': { name: 'Gomorra - La serie', year: '2014', rating: 8.7, genres: ['Crime', 'Dramma'] },
+  'tt7197008': { name: 'Suburra - La serie', year: '2017', rating: 7.9, genres: ['Crime', 'Azione'] },
+  'tt28019928': { name: 'Suburræterna', year: '2023', rating: 7.0, genres: ['Crime', 'Azione'] },
+  'tt7278862': { name: "L'amica geniale", year: '2018', rating: 8.6, genres: ['Dramma'] },
+  'tt1262078': { name: 'Romanzo Criminale - La serie', year: '2008', rating: 8.5, genres: ['Crime', 'Dramma'] },
+  'tt1034078': { name: 'Boris', year: '2007', rating: 8.5, genres: ['Commedia'] },
+  'tt13689404': { name: 'Strappare lungo i bordi', year: '2021', rating: 8.7, genres: ['Animazione', 'Commedia'] },
+  'tt8440532': { name: 'ZeroZeroZero', year: '2020', rating: 8.1, genres: ['Crime', 'Dramma'] },
+  'tt3655498': { name: 'The Young Pope', year: '2016', rating: 8.3, genres: ['Dramma'] },
+  'tt7939218': { name: 'Diavoli', year: '2020', rating: 7.1, genres: ['Thriller', 'Dramma'] },
+  'tt2439344': { name: '1992', year: '2015', rating: 7.7, genres: ['Dramma'] },
+  'tt5887224': { name: '1993', year: '2017', rating: 7.4, genres: ['Dramma'] },
+  'tt7522300': { name: '1994', year: '2019', rating: 7.3, genres: ['Dramma'] },
+  'tt13550882': { name: 'Blanca', year: '2021', rating: 7.5, genres: ['Crime', 'Dramma'] },
+  'tt13410712': { name: 'Christian', year: '2022', rating: 7.2, genres: ['Crime', 'Dramma'] },
+  'tt15367676': { name: 'Monterossi', year: '2022', rating: 7.0, genres: ['Crime', 'Giallo'] },
+  'tt16374026': { name: 'Call My Agent - Italia', year: '2023', rating: 7.4, genres: ['Commedia'] },
+  'tt12680684': { name: 'È stata la mano di Dio', year: '2021', rating: 7.3, genres: ['Dramma'] },
+  'tt4901306': { name: 'Perfetti sconosciuti', year: '2016', rating: 7.7, genres: ['Commedia', 'Dramma'] },
+  'tt2358891': { name: 'La grande bellezza', year: '2013', rating: 7.7, genres: ['Dramma'] },
+  'tt0118799': { name: 'La vita è bella', year: '1997', rating: 8.6, genres: ['Commedia', 'Dramma'] },
+  'tt0095765': { name: 'Nuovo Cinema Paradiso', year: '1988', rating: 8.5, genres: ['Dramma'] },
+  'tt4025514': { name: 'Suburra', year: '2015', rating: 7.4, genres: ['Crime', 'Thriller'] },
+  'tt0929425': { name: 'Gomorra', year: '2008', rating: 7.0, genres: ['Crime', 'Dramma'] },
+  'tt6768578': { name: 'Dogman', year: '2018', rating: 7.2, genres: ['Crime', 'Dramma'] },
+  'tt4218692': { name: 'Lo chiamavano Jeeg Robot', year: '2015', rating: 7.0, genres: ['Azione', 'Fantascienza'] },
+  'tt7853118': { name: 'Il traditore', year: '2019', rating: 7.1, genres: ['Crime', 'Dramma'] },
+  'tt2465578': { name: 'Il capitale umano', year: '2013', rating: 7.2, genres: ['Dramma'] },
+  'tt1895527': { name: 'ACAB - All Cops Are Bastards', year: '2012', rating: 6.7, genres: ['Azione', 'Dramma'] },
+  'tt0056801': { name: '8½ (Otto e mezzo)', year: '1963', rating: 8.0, genres: ['Dramma'] },
+  'tt0053779': { name: 'La dolce vita', year: '1960', rating: 8.0, genres: ['Commedia', 'Dramma'] },
+  'tt0040522': { name: 'Ladri di biciclette', year: '1948', rating: 8.3, genres: ['Dramma'] },
+
   // Recent Movies
   'tt6263850': { name: 'Deadpool & Wolverine', year: '2024', rating: 7.7, genres: ['Azione', 'Commedia'] },
   'tt15239678': { name: 'Dune - Parte Due', year: '2024', rating: 8.5, genres: ['Fantascienza', 'Avventura'] },
@@ -946,6 +1027,11 @@ function buildRowItems(
  */
 function getCategoryTitle(genreKey: string, targetType: CatalogTargetType): string {
   const titles: Record<string, { all: string; movie: string; series: string }> = {
+    italian: {
+      all: 'Cinema & Serie TV Italiane 🇮🇹',
+      movie: 'Cinema Italiano 🇮🇹',
+      series: 'Serie TV Italiane 🇮🇹',
+    },
     recent: {
       all: 'Aggiunti di Recente',
       movie: 'Film Aggiunti di Recente',
@@ -1130,6 +1216,8 @@ async function loadSharedRawData() {
       ]);
 
       // Resolve iconic benchmarks in 0ms
+      const curItaM = fetchItems('movie', CURATED_BENCHMARKS.italian.movies);
+      const curItaS = fetchItems('series', CURATED_BENCHMARKS.italian.series);
       const curRecentM = fetchItems('movie', CURATED_BENCHMARKS.recent.movies);
       const curRecentS = fetchItems('series', CURATED_BENCHMARKS.recent.series);
       const curTopM = fetchItems('movie', CURATED_BENCHMARKS.top_rated.movies);

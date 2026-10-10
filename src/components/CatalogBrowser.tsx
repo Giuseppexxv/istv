@@ -426,25 +426,20 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
     setSearching(true);
     const delayDebounce = setTimeout(() => {
       const q = searchQuery.trim();
-      // Global search across both movies and series regardless of active tab
-      Promise.all([
-        stremioService.fetchCatalog('official.catalog', 'movie', 'top', { search: q }),
-        stremioService.fetchCatalog('official.catalog', 'series', 'top', { search: q }),
-      ])
-        .then(([mov, ser]) => {
-          const combined = [...(mov || []), ...(ser || [])];
+      stremioService
+        .search(q)
+        .then((items) => {
           const seen = new Set<string>();
-          const unique = combined.filter((it) => {
+          const unique = items.filter((it) => {
             if (!it || !it.id || seen.has(it.id)) return false;
-            if (!isAlreadyReleased(it)) return false;
             seen.add(it.id);
             return true;
           });
-          setSearchResults(rankFamousItems(unique, q));
+          setSearchResults(unique);
           setSearching(false);
         })
         .catch(() => setSearching(false));
-    }, 250);
+    }, 200);
 
     return () => clearTimeout(delayDebounce);
   }, [searchQuery]);

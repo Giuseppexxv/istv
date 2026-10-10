@@ -4,7 +4,7 @@ import { createServer as createViteServer } from "vite";
 
 async function startServer() {
   const app = express();
-  const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+  const PORT = 3000;
 
   // Middleware for JSON
   app.use(express.json());
@@ -72,45 +72,6 @@ async function startServer() {
     return headers;
   }
 
-  // Generates a stable, pseudo-random public IPv4 address per video stream/addon URL path
-  // to bypass provider/addon IP rate limits and prevent "support project" block screens.
-  // It ensures the IP is perfectly stable while watching the same stream (for all its segment requests),
-  // but resets and shifts to a completely different IP when a different movie, episode, or stream is opened.
-  function getSpoofedIpForUrl(targetUrl: string): string {
-    if (!targetUrl) return "1.1.1.1";
-
-    let cleanUrl = targetUrl;
-    try {
-      const parsed = new URL(targetUrl);
-      let pathname = parsed.pathname;
-      // Strip segment-specific file names so all chunks/segments of the same parent playlist hash to the same IP
-      if (pathname.match(/\.(ts|aac|m4s|mp4|mp3|png|jpg|jpeg|gif)$/i)) {
-        const parts = pathname.split("/");
-        parts.pop();
-        pathname = parts.join("/");
-      }
-      cleanUrl = parsed.host + pathname;
-    } catch {
-      // fallback
-    }
-
-    // String hashing
-    let hash = 0;
-    for (let i = 0; i < cleanUrl.length; i++) {
-      hash = (hash << 5) - hash + cleanUrl.charCodeAt(i);
-      hash |= 0;
-    }
-    hash = Math.abs(hash);
-
-    // Generate valid public IPv4 octets (avoiding private subnets like 10.x, 192.168.x, etc.)
-    const octet1 = 71 + (hash % 109); // 71 to 179
-    const octet2 = (hash >> 8) & 255;
-    const octet3 = (hash >> 16) & 255;
-    const octet4 = 1 + (hash % 254); // 1 to 254
-
-    return `${octet1}.${octet2}.${octet3}.${octet4}`;
-  }
-
   // API: Universal Video Stream & HLS Proxy
   // Supports Range requests (seeking), header spoofing (Referer/Origin/User-Agent),
   // and rewrites HLS .m3u8 playlists so all chunks are automatically proxied
@@ -127,16 +88,6 @@ async function startServer() {
       }
 
       const headers = extractCustomHeaders(req);
-
-      // Auto-spoof client IP to bypass addon and provider IP rate limiting
-      const spoofedIp = getSpoofedIpForUrl(targetUrl);
-      headers["X-Forwarded-For"] = spoofedIp;
-      headers["X-Real-IP"] = spoofedIp;
-      headers["Client-IP"] = spoofedIp;
-      headers["CF-Connecting-IP"] = spoofedIp;
-      headers["True-Client-IP"] = spoofedIp;
-      headers["X-Client-IP"] = spoofedIp;
-      headers["X-Cluster-Client-IP"] = spoofedIp;
 
       // Forward Range request for progressive video loading / seeking
       if (req.headers.range) {
@@ -801,7 +752,7 @@ async function startServer() {
     return sortedCurated;
   }
 
-  // Resolves direct HLS stream URL for a given Vavoo channel
+  // Resolves direct HLS stream URL for a given Vavoo channel with auto-healing and retry
   async function resolveVavooStream(channelIdOrUrl: string, forceFresh = false): Promise<string> {
     const cached = vavooStreamCache.get(channelIdOrUrl);
     const now = Date.now();
@@ -815,46 +766,58 @@ async function startServer() {
       targetVavooUrl = `https://vavoo.to/vavoo-iptv/play/${channelIdOrUrl}`;
     }
 
-    const sig = await getVavooSignature();
+    // Attempt resolution across endpoints, automatically renewing signature if first attempt encounters 401/403 or error
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt === 1) {
+        vavooSignature = null;
+        vavooSignatureExpires = 0;
+      }
 
-    for (const baseSite of VAVOO_BASE_SITES) {
       try {
-        const resp = await fetch(`${baseSite}/mediahubmx-resolve.json`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json; charset=utf-8",
-            "mediahubmx-signature": sig,
-            "user-agent": "MediaHubMX/2",
-            accept: "*/*",
-            "Accept-Language": "it",
-          },
-          body: JSON.stringify({
-            language: "it",
-            region: "IT",
-            url: targetVavooUrl,
-            clientVersion: "3.0.2",
-          }),
-          signal: AbortSignal.timeout(9000),
-        });
+        const sig = await getVavooSignature();
 
-        if (!resp.ok) continue;
+        for (const baseSite of VAVOO_BASE_SITES) {
+          try {
+            const resp = await fetch(`${baseSite}/mediahubmx-resolve.json`, {
+              method: "POST",
+              headers: {
+                "content-type": "application/json; charset=utf-8",
+                "mediahubmx-signature": sig,
+                "user-agent": "MediaHubMX/2",
+                accept: "*/*",
+                "Accept-Language": "it",
+              },
+              body: JSON.stringify({
+                language: "it",
+                region: "IT",
+                url: targetVavooUrl,
+                clientVersion: "3.0.2",
+              }),
+              signal: AbortSignal.timeout(8000),
+            });
 
-        const body = await resp.json();
-        const upstreamUrl =
-          (Array.isArray(body) && body[0]?.url) ||
-          body?.url ||
-          body?.streamUrl;
+            if (!resp.ok) continue;
 
-        if (upstreamUrl && typeof upstreamUrl === "string") {
-          vavooStreamCache.set(channelIdOrUrl, {
-            streamUrl: upstreamUrl,
-            rawM3u8: upstreamUrl,
-            expires: now + 4 * 60 * 1000,
-          });
-          return upstreamUrl;
+            const body = await resp.json();
+            const upstreamUrl =
+              (Array.isArray(body) && body[0]?.url) ||
+              body?.url ||
+              body?.streamUrl;
+
+            if (upstreamUrl && typeof upstreamUrl === "string") {
+              vavooStreamCache.set(channelIdOrUrl, {
+                streamUrl: upstreamUrl,
+                rawM3u8: upstreamUrl,
+                expires: now + 5 * 60 * 1000,
+              });
+              return upstreamUrl;
+            }
+          } catch (err: any) {
+            console.warn(`[Vavoo Resolve Error] from ${baseSite} (attempt ${attempt + 1}):`, err.message);
+          }
         }
-      } catch (err: any) {
-        console.warn(`[Vavoo Resolve Error] from ${baseSite}:`, err.message);
+      } catch (sigErr: any) {
+        console.warn(`[Vavoo Signature Refresh Error] attempt ${attempt + 1}:`, sigErr.message);
       }
     }
 
@@ -1054,10 +1017,10 @@ async function startServer() {
       let tmdbId: number | null = null;
       let mediaType = type === "series" ? "tv" : "movie";
 
-      // Method 1: Find via IMDb ID on TMDB API
+      // Method 1: Find via IMDb ID on TMDB API (with fast fallback)
       if (imdbId && imdbId.startsWith("tt")) {
         const findUrl = `https://api.themoviedb.org/3/find/${imdbId}?api_key=15d2fb673961e6702c2a9255b1230013&external_source=imdb_id`;
-        const findResp = await fetch(findUrl, { signal: AbortSignal.timeout(3500) }).catch(() => null);
+        const findResp = await fetch(findUrl, { signal: AbortSignal.timeout(1500) }).catch(() => null);
         if (findResp && findResp.ok) {
           const findData = await findResp.json();
           if (type === "movie" && findData.movie_results?.length > 0) {
@@ -1079,7 +1042,7 @@ async function startServer() {
       // Method 2: If no tmdbId found by imdbId, search TMDB by title
       if (!tmdbId && title) {
         const searchUrl = `https://api.themoviedb.org/3/search/${mediaType}?api_key=15d2fb673961e6702c2a9255b1230013&query=${encodeURIComponent(title)}&language=it-IT`;
-        const searchResp = await fetch(searchUrl, { signal: AbortSignal.timeout(3500) }).catch(() => null);
+        const searchResp = await fetch(searchUrl, { signal: AbortSignal.timeout(1500) }).catch(() => null);
         if (searchResp && searchResp.ok) {
           const searchData = await searchResp.json();
           if (searchData.results?.length > 0) {
@@ -1091,8 +1054,8 @@ async function startServer() {
       if (tmdbId) {
         // Fetch Italian and English trailers concurrently for instant response
         const [vRespIt, vRespEn] = await Promise.all([
-          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=it-IT`, { signal: AbortSignal.timeout(3500) }).catch(() => null),
-          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=en-US`, { signal: AbortSignal.timeout(3500) }).catch(() => null),
+          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=it-IT`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
+          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=en-US`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
         ]);
 
         const vDataIt = vRespIt && vRespIt.ok ? await vRespIt.json() : null;
@@ -1192,6 +1155,9 @@ async function startServer() {
     }
     for (const [k, v] of topStreamingMemoryCache.entries()) {
       if (v.expires < now) topStreamingMemoryCache.delete(k);
+    }
+    for (const [k, v] of streamMemoryCache.entries()) {
+      if (v.expires < now) streamMemoryCache.delete(k);
     }
   }, 5 * 60 * 1000);
 
@@ -1309,7 +1275,8 @@ async function startServer() {
   });
 
   // Dedicated official TOP Streaming Italia addon route with caching
-  const TOP_STREAMING_BASE = "https://top-streaming.stream/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb";
+  // Exclusively configured using: https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/manifest.json
+  const TOP_STREAMING_BASE = "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c";
   const topStreamingMemoryCache = new Map<string, { body: string; contentType: string; expires: number }>();
 
   app.use("/api/addon/topstreaming", async (req, res) => {
@@ -1352,6 +1319,24 @@ async function startServer() {
         return res.status(response.status).json({ error: "Failed to fetch from top-streaming" });
       }
 
+      if (subPath === "/manifest.json" || subPath.startsWith("/manifest.json")) {
+        const text = await response.text();
+        try {
+          const json = JSON.parse(text);
+          json.id = "topstreaming.italy";
+          const modifiedText = JSON.stringify(json);
+          topStreamingMemoryCache.set(cacheKey, {
+            body: modifiedText,
+            contentType: "application/json",
+            expires: now + 24 * 60 * 60 * 1000,
+          });
+          res.setHeader("Cache-Control", "public, max-age=86400");
+          return res.send(modifiedText);
+        } catch {
+          return res.send(text);
+        }
+      }
+
       let data = await response.text();
       // Automatically upgrade low-res posters to HD
       if (data.includes('image.tmdb.org/t/p/')) {
@@ -1382,30 +1367,48 @@ async function startServer() {
   // Dedicated FlixPatrol Popular Italy Top 10 Endpoint (https://flixpatrol.com/top10/streaming/italy/)
   const flixpatrolMemoryCache = new Map<string, { body: string; expires: number }>();
 
+  // Canonical localized titles for Italian & top global productions
+  const LOCALIZED_ITALIAN_TITLES: Record<string, string> = {
+    tt21800162: "C'è ancora domani",
+    tt6864602: "Mare Fuori",
+    tt7278862: "L'amica geniale",
+    tt28019928: "Suburræterna",
+    tt2049116: "Gomorra - La serie",
+    tt7197008: "Suburra - La serie",
+    tt0118799: "La vita è bella",
+    tt0095765: "Nuovo Cinema Paradiso",
+    tt2358891: "La grande bellezza",
+    tt4901306: "Perfetti sconosciuti",
+    tt12680684: "È stata la mano di Dio",
+    tt4218692: "Lo chiamavano Jeeg Robot",
+    tt9218128: "Il Gladiatore II",
+    tt15239678: "Dune - Parte Due",
+  };
+
   const FLIXPATROL_CURATED_ITALY: Record<string, string[]> = {
     movie: [
+      "tt21800162", // C'è ancora domani
       "tt9218128",  // Il Gladiatore II
       "tt6263850",  // Deadpool & Wolverine
       "tt17526714", // The Substance
       "tt22022452", // Inside Out 2
       "tt18412256", // Alien: Romulus
-      "tt21966540", // C'è ancora domani
       "tt15239678", // Dune - Parte Due
       "tt11573032", // Ferrari
       "tt16426418", // Challengers
       "tt1745960",  // Top Gun: Maverick
     ],
     series: [
+      "tt6864602",  // Mare Fuori
+      "tt7278862",  // L'amica geniale
+      "tt28019928", // Suburræterna
       "tt15435876", // The Penguin
-      "tt6638726",  // L'amica geniale (My Brilliant Friend)
       "tt2788316",  // Shōgun
       "tt14452776", // The Bear
       "tt17677860", // Presumed Innocent
-      "tt13207736", // Monsters: The Lyle and Erik Menendez Story
-      "tt11152062", // Mare Fuori
+      "tt13207736", // Monsters: La storia di Lyle ed Erik Menendez
       "tt12637874", // Fallout
       "tt1190634",  // The Boys
-      "tt22776856", // Suburræterna
     ],
   };
 
@@ -1436,12 +1439,13 @@ async function startServer() {
             const data = await r.json();
             if (!data || !data.meta) return null;
             const m = data.meta;
+            const italianTitle = LOCALIZED_ITALIAN_TITLES[id] || m.name;
             return {
               id: m.id || id,
               type: m.type || type,
-              name: m.name,
-              poster: m.poster,
-              background: m.background,
+              name: italianTitle,
+              poster: m.poster || `https://images.metahub.space/poster/medium/${id}/img`,
+              background: m.background || `https://images.metahub.space/background/medium/${id}/img`,
               logo: m.logo,
               genres: m.genres || (m.genre ? (Array.isArray(m.genre) ? m.genre : [m.genre]) : []),
               releaseInfo: m.releaseInfo || m.year,
@@ -1470,113 +1474,97 @@ async function startServer() {
     }
   });
 
-  // Dedicated hidden official stream addon route with in-memory caching
-  const INTERNAL_STREAM_BASE = "https://toastflix.stremio-italia.eu/eyJhaW9zdHJlYW1zTW9kZSI6dHJ1ZX0";
+  // ==========================================
+  // TOASTFLIX EXCLUSIVE ITALIAN STREAM ENGINE
+  // Primary Source: https://toastflix.stremio-italia.eu/eyJtdWx0aUxhbmdNb2RlIjp0cnVlfQ
+  // Fast Fallback:  https://toastflix.stremio-italia.eu
+  // ==========================================
+  const TOASTFLIX_PRIMARY = "https://toastflix.stremio-italia.eu/eyJtdWx0aUxhbmdNb2RlIjp0cnVlfQ";
+  const TOASTFLIX_FALLBACK = "https://toastflix.stremio-italia.eu";
   const streamMemoryCache = new Map<string, { body: string; expires: number }>();
 
-  // Server-Side direct extractor for Vixsrc (StreamingCommunity) HD Italian streams
-  // Bypasses the need for Stremio Desktop local proxy (127.0.0.1:11470)
-  async function resolveVixsrcStream(type: string, id: string): Promise<any | null> {
+  // Helper to query ToastFlix endpoints with custom timeout
+  async function fetchFromToastFlix(baseUrl: string, subPath: string, timeoutMs: number): Promise<any | null> {
     try {
-      let apiPath = "";
-      if (type === "series") {
-        const parts = id.split(":");
-        const imdbId = parts[0];
-        const season = parts[1] || "1";
-        const episode = parts[2] || "1";
-        apiPath = `/api/tv/${imdbId}/${season}/${episode}?lang=it`;
-      } else {
-        const imdbId = id.split(":")[0];
-        apiPath = `/api/movie/${imdbId}?lang=it`;
-      }
-
-      const headers = {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        Referer: "https://vixsrc.to/",
-        Origin: "https://vixsrc.to",
-      };
-
-      const r1 = await fetch(`https://vixsrc.to${apiPath}`, {
-        headers,
-        signal: AbortSignal.timeout(9000),
-      });
-      if (!r1.ok) return null;
-      const data = await r1.json();
-      if (!data.src) return null;
-
-      const r2 = await fetch(`https://vixsrc.to${data.src}`, {
-        headers,
-        signal: AbortSignal.timeout(9000),
-      });
-      if (!r2.ok) return null;
-      const html = await r2.text();
-
-      let tokenV: string | null = null;
-      let expiresV: string | null = null;
-      let urlV: string | null = null;
-
-      const mp = html.match(
-        /window\.masterPlaylist\s*=\s*\{[\s\S]*?params\s*:\s*\{([\s\S]*?)\}\s*,\s*url\s*:\s*['"]([^'"]+)['"]/
-      );
-      if (mp) {
-        const params = mp[1];
-        urlV = mp[2].replace(/\\/g, "");
-        const tM = params.match(/['"]token['"]\s*:\s*['"]([^'"]+)['"]/);
-        const eM = params.match(/['"]expires['"]\s*:\s*['"]([^'"]+)['"]/);
-        if (tM) tokenV = tM[1];
-        if (eM) expiresV = eM[1];
-      }
-
-      if (!tokenV) {
-        const t = html.match(/'token'\s*:\s*'([^']+)'/) || html.match(/"token"\s*:\s*"([^"]+)"/);
-        if (t) tokenV = t[1];
-      }
-      if (!expiresV) {
-        const e = html.match(/'expires'\s*:\s*'([^']+)'/) || html.match(/"expires"\s*:\s*"([^"]+)"/);
-        if (e) expiresV = e[1];
-      }
-      if (!urlV) {
-        const u = html.match(/url\s*:\s*'([^']+)'/) || html.match(/url\s*:\s*"([^"]+)"/);
-        if (u) urlV = u[1].replace(/\\/g, "");
-      }
-
-      const canPlayFHD = /window\.canPlayFHD\s*=\s*true/.test(html);
-
-      if (!urlV || !tokenV || !expiresV) {
-        return null;
-      }
-
-      let playlistUrl = urlV.includes("?")
-        ? `${urlV}&token=${tokenV}&expires=${expiresV}${canPlayFHD ? "&h=1" : ""}`
-        : `${urlV}?token=${tokenV}&expires=${expiresV}${canPlayFHD ? "&h=1" : ""}`;
-      playlistUrl = playlistUrl.replace("?", ".m3u8?");
-
-      return {
-        name: "ToastFlix HD 1080p",
-        title: "🎬 Streaming HD 1080p • Audio Italiano 🇮🇹",
-        url: playlistUrl,
-        behaviorHints: {
-          notWebReady: true,
-          proxyHeaders: {
-            request: {
-              "User-Agent": headers["User-Agent"],
-              Accept: "*/*",
-              "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-              Referer: "https://vixsrc.to/",
-              Origin: "https://vixsrc.to",
-            },
-          },
+      const targetUrl = `${baseUrl}${subPath}`;
+      const resp = await fetch(targetUrl, {
+        method: "GET",
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Stremio/4.4.168",
+          Accept: "application/json, text/plain, */*",
+          "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
         },
-      };
-    } catch (err: any) {
-      console.warn(`[Vixsrc Resolver Error] for ${type}/${id}:`, err.message);
-      return null;
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (resp.ok) {
+        return await resp.json();
+      }
+    } catch {
+      // Upstream timeout or connection error handled by fallback
     }
+    return null;
   }
 
+  // Score function to classify and prioritize direct 1080p FHD HLS streams at position 0
+  function scoreToastFlixStream(s: any): number {
+    let score = 0;
+    const name = (s.name || "").toLowerCase();
+    const title = (s.title || "").toLowerCase();
+    const rawUrl = (s.url || "").toLowerCase();
+
+    // 1. Direct playable URL
+    if (s.url && s.url.trim().length > 0) {
+      score += 2500;
+    }
+
+    // 2. Direct HLS Stream (.m3u8 playlist or clone manifest)
+    const isHls =
+      rawUrl.includes(".m3u8") ||
+      rawUrl.includes("manifest") ||
+      name.includes("hls") ||
+      title.includes("hls");
+    if (isHls) {
+      score += 2000;
+    }
+
+    // 3. 1080p / FHD Resolution (Top Priority)
+    const is1080p =
+      name.includes("fhd") ||
+      title.includes("fhd") ||
+      name.includes("1080p") ||
+      title.includes("1080p") ||
+      name.includes("1080") ||
+      title.includes("1080");
+    if (is1080p) {
+      score += 1500;
+    } else if (name.includes("4k") || title.includes("4k") || name.includes("2160p")) {
+      score += 1000;
+    } else if (name.includes("720p") || title.includes("720p") || name.includes("hd")) {
+      score += 600;
+    }
+
+    // 4. Italian Language Audio / Flag
+    const isIta =
+      title.includes("🇮🇹") ||
+      name.includes("🇮🇹") ||
+      title.includes("ita") ||
+      name.includes("ita") ||
+      title.includes("italiano") ||
+      name.includes("italiano");
+    if (isIta) {
+      score += 1200;
+    }
+
+    // 5. ToastFlix Direct Fast Badges
+    if (name.includes("🚀") || name.includes("🎯")) {
+      score += 400;
+    }
+
+    return score;
+  }
+
+  // Dedicated ToastFlix Addon Route with Primary + Fast Fallback & Automatic Proxying
   app.use("/api/addon/stream", async (req, res) => {
     try {
       let subPath = req.url;
@@ -1591,20 +1579,30 @@ async function startServer() {
         return res.sendStatus(200);
       }
 
+      // Manifest request: Query ToastFlix primary manifest with fast fallback
       if (subPath === "/manifest.json" || subPath.startsWith("/manifest.json")) {
-        return res.json({
-          id: "official.stream",
-          version: "3.0.0",
-          name: "Flussi Video Ufficiali",
-          description: "Flussi di riproduzione video in lingua italiana",
-          types: ["movie", "series"],
+        let manifestData = await fetchFromToastFlix(TOASTFLIX_PRIMARY, "/manifest.json", 4000);
+        if (!manifestData) {
+          manifestData = await fetchFromToastFlix(TOASTFLIX_FALLBACK, "/manifest.json", 3000);
+        }
+
+        const officialManifest = {
+          id: "toastflix.addon.it",
+          version: manifestData?.version || "3.0.1",
+          name: "ToastFlix 🥪 (Ufficiale)",
+          description: "Sorgente primaria ufficiale per flussi video streaming in lingua italiana 1080p FHD HLS.",
+          logo: manifestData?.logo || "https://toastflix.stremio-italia.eu/toast-stream-logo.png",
+          types: manifestData?.types || ["movie", "series"],
           catalogs: [],
           resources: ["stream"],
-          idPrefixes: ["tt", "kitsu", "tmdb"]
-        });
+          idPrefixes: manifestData?.idPrefixes || ["tt", "kitsu", "tmdb"],
+        };
+
+        return res.json(officialManifest);
       }
 
-      const cacheKey = `str_${subPath}`;
+      // Check in-memory cache for stream requests
+      const cacheKey = `toast_${subPath}`;
       const cached = streamMemoryCache.get(cacheKey);
       const now = Date.now();
       if (cached && cached.expires > now) {
@@ -1612,6 +1610,7 @@ async function startServer() {
         return res.send(cached.body);
       }
 
+      // Parse stream target type and id
       const streamMatch = subPath.match(/^\/stream\/([^/]+)\/([^.]+)\.json$/);
       let targetType = "";
       let targetId = "";
@@ -1620,57 +1619,63 @@ async function startServer() {
         targetId = streamMatch[2];
       }
 
-      const targetUrl = `${INTERNAL_STREAM_BASE}${subPath}`;
-
-      // Start Vixsrc resolution immediately
-      const vixsrcPromise = targetType && targetId ? resolveVixsrcStream(targetType, targetId) : Promise.resolve(null);
-
-      // Fetch upstream ToastFlix with a fast 2500ms timeout
-      const upstreamPromise = fetch(targetUrl, {
-        method: "GET",
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-          Accept: "application/json, text/plain, */*",
-          "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        },
-        signal: AbortSignal.timeout(2500),
-      }).catch(() => null);
-
-      // Race/settle: If Vixsrc resolves quickly, or when both settle
-      const [vixsrcResult, upstreamResult] = await Promise.allSettled([
-        vixsrcPromise,
-        upstreamPromise,
-      ]);
-
-      const streams: any[] = [];
-
-      // 1. If direct Vixsrc stream resolved, place it as primary high-priority stream
-      if (vixsrcResult.status === "fulfilled" && vixsrcResult.value) {
-        streams.push(vixsrcResult.value);
+      let effectiveSubPath = subPath;
+      if (targetType === "series" && targetId && !targetId.includes(":")) {
+        effectiveSubPath = `/stream/series/${targetId}:1:1.json`;
       }
 
-      // 2. Parse upstream ToastFlix streams if available
-      if (upstreamResult.status === "fulfilled" && upstreamResult.value && upstreamResult.value.ok) {
-        try {
-          const upstreamData = await upstreamResult.value.json();
-          if (Array.isArray(upstreamData.streams)) {
-            for (const s of upstreamData.streams) {
-              if (s.url && s.url.length > 0) {
-                streams.push(s);
-              } else if (s.externalUrl && !s.externalUrl.includes("/extractor/css")) {
-                streams.push(s);
-              }
+      // 1. Query Official Primary ToastFlix
+      let toastResponse = await fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 6500);
+
+      // 2. Fast Fallback to standard ToastFlix if primary timed out or returned no streams
+      if (!toastResponse || !Array.isArray(toastResponse.streams) || toastResponse.streams.length === 0) {
+        toastResponse = await fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 4500);
+      }
+
+      const rawStreams: any[] = Array.isArray(toastResponse?.streams) ? toastResponse.streams : [];
+      const processedStreams: any[] = [];
+
+      for (const s of rawStreams) {
+        if (!s || !s.url) continue;
+        if (s.name?.includes("Trailer") || s.ytId) continue;
+
+        const proxiedStream = { ...s };
+
+        // Collect custom headers (User-Agent, Referer, Origin) from headers or behaviorHints
+        const customHeaders: Record<string, string> = {
+          ...(proxiedStream.headers || {}),
+          ...(proxiedStream.behaviorHints?.proxyHeaders?.request || {}),
+        };
+
+        // Automatic proxying: wrap stream through /api/stream-proxy so HLS chunks & headers are transparently relayed
+        if (!proxiedStream.url.startsWith("/api/stream-proxy")) {
+          let proxyUrl = `/api/stream-proxy?url=${encodeURIComponent(proxiedStream.url)}`;
+          if (Object.keys(customHeaders).length > 0) {
+            proxyUrl += `&headers=${encodeURIComponent(JSON.stringify(customHeaders))}`;
+            if (customHeaders["Referer"]) {
+              proxyUrl += `&referer=${encodeURIComponent(customHeaders["Referer"])}`;
+            }
+            if (customHeaders["Origin"]) {
+              proxyUrl += `&origin=${encodeURIComponent(customHeaders["Origin"])}`;
             }
           }
-        } catch {
-          // ignore json parse error
+          proxiedStream.url = proxyUrl;
         }
+
+        // Clean name & branding
+        if (!proxiedStream.name) {
+          proxiedStream.name = "ToastFlix 🥪";
+        }
+
+        processedStreams.push(proxiedStream);
       }
 
-      const responsePayload = JSON.stringify({ streams });
+      // Classify and sort: Direct 1080p FHD HLS streams with Italian language ranked at position 0
+      processedStreams.sort((a, b) => scoreToastFlixStream(b) - scoreToastFlixStream(a));
 
-      if (streams.length > 0) {
+      const responsePayload = JSON.stringify({ streams: processedStreams });
+
+      if (processedStreams.length > 0) {
         streamMemoryCache.set(cacheKey, {
           body: responsePayload,
           expires: now + 30 * 60 * 1000,
@@ -1679,7 +1684,7 @@ async function startServer() {
 
       res.send(responsePayload);
     } catch (err: any) {
-      console.warn(`[Stream Proxy Error] for ${req.url}:`, err.message);
+      console.warn(`[ToastFlix Stream Proxy Error] for ${req.url}:`, err.message);
       res.json({ streams: [] });
     }
   });
@@ -1705,16 +1710,6 @@ async function startServer() {
         Accept: "application/json, text/plain, */*",
         "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
       };
-
-      // Auto-spoof client IP to bypass addon and provider IP rate limiting
-      const spoofedIp = getSpoofedIpForUrl(targetUrl);
-      headers["X-Forwarded-For"] = spoofedIp;
-      headers["X-Real-IP"] = spoofedIp;
-      headers["Client-IP"] = spoofedIp;
-      headers["CF-Connecting-IP"] = spoofedIp;
-      headers["True-Client-IP"] = spoofedIp;
-      headers["X-Client-IP"] = spoofedIp;
-      headers["X-Cluster-Client-IP"] = spoofedIp;
 
       const response = await fetch(targetUrl, {
         method: "GET",
@@ -1784,10 +1779,10 @@ async function startServer() {
     setTimeout(async () => {
       try {
         const warmEndpoints = [
-          "https://top-streaming.stream/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb/catalog/movie/popular-movie-global.json",
-          "https://top-streaming.stream/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb/catalog/series/popular-series-global.json",
-          "https://top-streaming.stream/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb/catalog/movie/netflix-movies-italy.json",
-          "https://top-streaming.stream/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb/catalog/series/netflix-series-italy.json",
+          "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/catalog/movie/popular-movie-global.json",
+          "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/catalog/series/popular-series-global.json",
+          "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/catalog/movie/netflix-movies-italy.json",
+          "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/catalog/series/netflix-series-italy.json",
           "https://v3-cinemeta.strem.io/catalog/movie/top.json",
           "https://v3-cinemeta.strem.io/catalog/series/top.json",
         ];
@@ -1797,7 +1792,7 @@ async function startServer() {
               const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0" } });
               if (resp.ok) {
                 const text = await resp.text();
-                const subPath = new URL(url).pathname.replace("/1ce8a581-8ed8-49fa-9700-f10dd5e4b5bb", "");
+                const subPath = new URL(url).pathname.replace("/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c", "");
                 if (url.includes("top-streaming.stream")) {
                   topStreamingMemoryCache.set(`top_${subPath}`, { body: text, contentType: "application/json", expires: Date.now() + 60 * 60 * 1000 });
                 } else {

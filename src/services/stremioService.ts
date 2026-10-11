@@ -121,24 +121,6 @@ export const DEFAULT_ADDONS: InstalledAddon[] = [
   },
 ];
 
-// Popular Community Add-ons for 1-Click Install
-export const POPULAR_COMMUNITY_ADDONS = [
-  {
-    id: 'org.stremio.anime-kitsu',
-    name: 'Anime Kitsu',
-    description: 'Scopri anime di tendenza, serie animate e film powered by Kitsu.io.',
-    manifestUrl: 'https://anime-kitsu.strem.fun/manifest.json',
-    types: ['series', 'movie'],
-  },
-  {
-    id: 'com.stremio.youtube',
-    name: 'YouTube Channels',
-    description: 'Guarda feed di canali pubblici YouTube e video di tendenza.',
-    manifestUrl: 'https://youtube.strem.io/manifest.json',
-    types: ['other', 'channel'],
-  },
-];
-
 class StremioService {
   private addons: InstalledAddon[] = [];
 
@@ -506,6 +488,15 @@ class StremioService {
     } catch {
       return [];
     }
+  }
+
+  // Synchronously retrieve cached meta if present
+  public getCachedMeta(type: string, id: string): StremioMetaDetail | null {
+    const cached = this.metaCache.get(`${type}_${id}`);
+    if (cached && cached.expires > Date.now()) {
+      return cached.data;
+    }
+    return null;
   }
 
   // Fetch detailed meta for a movie or series with caching

@@ -108,6 +108,26 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
     <div
       id={`media-card-${item.id}`}
       onClick={() => onSelect(item)}
+      onMouseEnter={() => {
+        const bgUrl =
+          optimizeImageUrl(item.background, 'background') ||
+          (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null);
+        if (bgUrl) {
+          const preImg = new Image();
+          preImg.decoding = 'async';
+          preImg.src = bgUrl;
+        }
+      }}
+      onTouchStart={() => {
+        const bgUrl =
+          optimizeImageUrl(item.background, 'background') ||
+          (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null);
+        if (bgUrl) {
+          const preImg = new Image();
+          preImg.decoding = 'async';
+          preImg.src = bgUrl;
+        }
+      }}
       className={`group relative flex flex-col rounded-2xl overflow-hidden cursor-pointer select-none transition-all duration-200 hover:-translate-y-1.5 bg-[#0e0e18] carousel-card-contain ${
         isMovie
           ? 'border border-rose-500/20 hover:border-rose-500/60 hover:shadow-[0_12px_28px_rgba(225,29,72,0.25)]'

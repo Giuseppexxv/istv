@@ -3,6 +3,20 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
+  process.on("unhandledRejection", (reason: any) => {
+    if (reason?.name === "AbortError" || reason?.code === "ABORT_ERR") {
+      return;
+    }
+    console.warn("[Unhandled Rejection caught safely]:", reason?.message || reason);
+  });
+
+  process.on("uncaughtException", (err: any) => {
+    if (err?.name === "AbortError" || err?.code === "ABORT_ERR") {
+      return;
+    }
+    console.warn("[Uncaught Exception caught safely]:", err?.message || err);
+  });
+
   const app = express();
   const PORT = 3000;
 
@@ -1159,6 +1173,15 @@ async function startServer() {
     for (const [k, v] of streamMemoryCache.entries()) {
       if (v.expires < now) streamMemoryCache.delete(k);
     }
+    for (const [k, v] of trailerCache.entries()) {
+      if (v.expires < now) trailerCache.delete(k);
+    }
+    for (const [k, v] of vavooStreamCache.entries()) {
+      if (v.expires < now) vavooStreamCache.delete(k);
+    }
+    for (const [k, v] of flixpatrolMemoryCache.entries()) {
+      if (v.expires < now) flixpatrolMemoryCache.delete(k);
+    }
   }, 5 * 60 * 1000);
 
   app.use("/api/addon/catalog", async (req, res) => {
@@ -1773,7 +1796,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`[IStream] Full-stack server running on http://0.0.0.0:${PORT}`);
+    console.log(`[Vivid] Full-stack server running on http://0.0.0.0:${PORT}`);
 
     // Background cache pre-warming to ensure first client requests respond in 1ms
     setTimeout(async () => {

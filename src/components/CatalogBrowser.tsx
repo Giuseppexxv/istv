@@ -795,6 +795,23 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
     setFeaturedIndex((prev) => (prev + 1) % featuredList.length);
   };
 
+  // Pre-warm hero carousel images in background for instantaneous slide transitions
+  React.useEffect(() => {
+    if (featuredList.length > 0) {
+      featuredList.slice(0, 6).forEach((item) => {
+        const bgUrl =
+          (typeof window !== 'undefined' && window.innerWidth < 640
+            ? optimizeImageUrl(item.poster, 'poster') || optimizeImageUrl(item.background, 'background')
+            : optimizeImageUrl(item.background, 'background') || optimizeImageUrl(item.poster, 'poster'));
+        if (bgUrl) {
+          const preImg = new Image();
+          preImg.decoding = 'async';
+          preImg.src = bgUrl;
+        }
+      });
+    }
+  }, [featuredList]);
+
   const handleCardQuickPlay = React.useCallback((m: StremioMetaPreview) => {
     onSelectMedia(m);
   }, [onSelectMedia]);
@@ -873,6 +890,9 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
                 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1920&q=85'
               }
               alt={currentHero.name}
+              loading="eager"
+              decoding="async"
+              {...({ fetchPriority: 'high' } as any)}
               className="w-full h-full object-cover object-center filter brightness-100 contrast-110 saturate-140 transition-all duration-1000 ease-out"
             />
             

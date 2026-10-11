@@ -6,9 +6,6 @@ import {
   Bookmark,
   Search,
   X,
-  Radio,
-  ShieldCheck,
-  Settings,
 } from 'lucide-react';
 import { ViewTab } from '../types/stremio';
 
@@ -29,7 +26,7 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
   const [isScrolled, setIsScrolled] = useState(false);
   const isScrolledRef = React.useRef(false);
 
-  const isSearching = isSearchFocused || Boolean(searchQuery.trim());
+  const isSearching = currentTab !== 'library' && (isSearchFocused || Boolean(searchQuery.trim()));
 
   React.useEffect(() => {
     let ticking = false;
@@ -101,11 +98,11 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
               ? 'opacity-0 pointer-events-none -translate-x-4 scale-95'
               : 'opacity-100 pointer-events-auto translate-x-0 scale-100'
           }`}
-          title="TVWDU - Torna a Scopri"
+          title="Vivid - Torna a Scopri"
         >
           <div className="pure-inflated-glass-wrapper relative">
             <span className="pure-inflated-glass-logo relative text-lg sm:text-xl md:text-2xl font-black tracking-wide whitespace-nowrap">
-              TVWDU
+              Vivid
             </span>
           </div>
         </div>
@@ -138,58 +135,62 @@ export const Navbar: React.FC<NavbarProps> = React.memo(({
           })}
         </nav>
 
-        {/* Floating Detached Search Bar on the Right: Ultra-compact when unfocused, expands smoothly towards left */}
-        <div className="relative flex items-center flex-shrink-0 ml-auto z-30">
-          <div
-            className={`relative flex items-center transition-all duration-300 ease-in-out liquid-glass-transparent rounded-full px-2.5 sm:px-3 py-1 sm:py-1.5 border border-white/20 shadow-2xl shadow-black/80 ${
-              isSearching
-                ? 'w-56 sm:w-72 md:w-96 ring-2 ring-cyan-500/50 shadow-cyan-600/20'
-                : 'w-20 sm:w-24 md:w-26'
-            }`}
-          >
-            <Search className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 mr-1.5 flex-shrink-0" />
-            <input
-              id="search-input"
-              type="text"
-              placeholder="Cerca..."
-              value={searchQuery}
-              onChange={(e) => onSearchChange(e.target.value)}
-              onFocus={() => setIsSearchFocused(true)}
-              onBlur={() => {
-                setTimeout(() => {
-                  setIsSearchFocused(false);
-                }, 180);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  onSearchChange('');
-                  setIsSearchFocused(false);
-                  const el = document.getElementById('search-input') as HTMLInputElement | null;
-                  el?.blur();
-                }
-              }}
-              className="w-full bg-transparent text-[10px] sm:text-[11px] text-white placeholder-slate-400/80 focus:outline-none font-medium"
-            />
-            {isSearching && (
-              <button
-                type="button"
-                onMouseDown={(e) => {
-                  e.preventDefault();
+        {/* Floating Detached Search Bar on the Right: Nascosta quando si è nella tab Libreria */}
+        {currentTab !== 'library' ? (
+          <div className="relative flex items-center flex-shrink-0 ml-auto z-30">
+            <div
+              className={`relative flex items-center transition-all duration-300 ease-in-out liquid-glass-transparent rounded-full px-2.5 sm:px-3 py-1 sm:py-1.5 border border-white/20 shadow-2xl shadow-black/80 ${
+                isSearching
+                  ? 'w-56 sm:w-72 md:w-96 ring-2 ring-cyan-500/50 shadow-cyan-600/20'
+                  : 'w-20 sm:w-24 md:w-26'
+              }`}
+            >
+              <Search className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-cyan-400 mr-1.5 flex-shrink-0" />
+              <input
+                id="search-input"
+                type="text"
+                placeholder="Cerca..."
+                value={searchQuery}
+                onChange={(e) => onSearchChange(e.target.value)}
+                onFocus={() => setIsSearchFocused(true)}
+                onBlur={() => {
+                  setTimeout(() => {
+                    setIsSearchFocused(false);
+                  }, 180);
                 }}
-                onClick={() => {
-                  onSearchChange('');
-                  setIsSearchFocused(false);
-                  const el = document.getElementById('search-input') as HTMLInputElement | null;
-                  el?.blur();
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    onSearchChange('');
+                    setIsSearchFocused(false);
+                    const el = document.getElementById('search-input') as HTMLInputElement | null;
+                    el?.blur();
+                  }
                 }}
-                className="text-slate-400 hover:text-white ml-1 p-1 rounded-full hover:bg-white/10 transition-colors cursor-pointer flex-shrink-0"
-                title="Chiudi ricerca"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
+                className="w-full bg-transparent text-[10px] sm:text-[11px] text-white placeholder-slate-400/80 focus:outline-none font-medium"
+              />
+              {isSearching && (
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                  }}
+                  onClick={() => {
+                    onSearchChange('');
+                    setIsSearchFocused(false);
+                    const el = document.getElementById('search-input') as HTMLInputElement | null;
+                    el?.blur();
+                  }}
+                  className="text-slate-400 hover:text-white ml-1 p-1 rounded-full hover:bg-white/10 transition-colors cursor-pointer flex-shrink-0"
+                  title="Chiudi ricerca"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
+        ) : (
+          <div className="w-6 sm:w-8 ml-auto flex-shrink-0" />
+        )}
       </div>
 
       {/* Row 2: Navigation Bar below Logo and Search for mobile (both portrait and mobile landscape) */}

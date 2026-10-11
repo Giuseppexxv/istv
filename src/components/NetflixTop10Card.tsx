@@ -268,6 +268,27 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
       {/* ================= POSTER CARD (RIGHT / OVERLAPPING) ================= */}
       <div
         onClick={() => onSelect(item)}
+        onMouseEnter={() => {
+          setIsHovered(true);
+          const bgUrl =
+            optimizeImageUrl(item.background, 'background') ||
+            (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null);
+          if (bgUrl) {
+            const preImg = new Image();
+            preImg.decoding = 'async';
+            preImg.src = bgUrl;
+          }
+        }}
+        onTouchStart={() => {
+          const bgUrl =
+            optimizeImageUrl(item.background, 'background') ||
+            (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null);
+          if (bgUrl) {
+            const preImg = new Image();
+            preImg.decoding = 'async';
+            preImg.src = bgUrl;
+          }
+        }}
         className={`relative z-20 w-36 sm:w-44 md:w-48 aspect-[2/3] rounded-2xl overflow-hidden cursor-pointer transition-all duration-200 transform-gpu bg-[#0a0a14] border shadow-2xl flex-shrink-0 ${
           isHovered
             ? 'scale-105 -translate-y-2 border-white/70 shadow-[0_20px_45px_rgba(0,0,0,0.95),0_0_25px_rgba(255,255,255,0.25)]'

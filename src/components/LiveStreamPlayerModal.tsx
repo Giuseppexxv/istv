@@ -157,7 +157,6 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
           }).catch((err) => {
             if (playPromiseRef.current === p) playPromiseRef.current = null;
             console.warn('[Live TV Autoplay Blocked] Starting muted per browser policy:', err);
-            // If browser blocks initial unmuted autoplay, start muted and allow 1-tap unmute
             video.muted = true;
             setIsMuted(true);
             const p2 = video.play();
@@ -476,19 +475,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
         </div>
       </div>
 
-      {/* UNMUTE FLOATING ACTION PILL (Shown when stream starts muted due to browser policy) */}
-      {isMuted && !useFallbackProxy && !isLoadingStream && (
-        <div className="absolute bottom-20 left-4 sm:left-6 z-40 animate-in fade-in duration-300">
-          <button
-            type="button"
-            onClick={toggleMute}
-            className="flex items-center gap-2.5 px-4 sm:px-5 py-2.5 sm:py-3 rounded-2xl liquid-glass-elevated border border-red-500/40 bg-gradient-to-r from-red-600/90 to-rose-600/90 hover:from-red-500 hover:to-rose-500 text-white font-extrabold text-xs shadow-2xl backdrop-blur-xl transition-all cursor-pointer active:scale-95 animate-pulse"
-          >
-            <VolumeX className="w-4 h-4 text-white" />
-            <span>Tocca per attivare l'audio</span>
-          </button>
-        </div>
-      )}
+      {/* UNMUTE FLOATING ACTION PILL REMOVED */}
 
       {/* VIDEO PLAYER CONTAINER */}
       <div className="flex-1 w-full h-full bg-black relative flex items-center justify-center overflow-hidden">

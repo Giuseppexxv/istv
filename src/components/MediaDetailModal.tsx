@@ -42,6 +42,8 @@ interface MediaDetailModalProps {
 
 // Client-side in-memory trailer cache for instant 0ms retrieval on repeated visits
 const trailerClientCache = new Map<string, string>();
+// Client-side in-memory banner cache to eliminate double loads and flickering
+const modalBannerCache = new Map<string, string>();
 
 export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   item,
@@ -49,20 +51,30 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onPlayStream,
 }) => {
   // Pre-calculate instant poster and backdrop from item to eliminate any render delay
+  const cachedMeta = item ? stremioService.getCachedMeta(item.type, item.id) : null;
   const initialPoster = item
-    ? optimizeImageUrl(item.poster, 'poster') ||
+    ? optimizeImageUrl(cachedMeta?.poster || item.poster, 'poster') ||
       (item.id?.startsWith('tt') ? `https://images.metahub.space/poster/medium/${item.id}/img` : '')
     : '';
+
+  // Determine locked, stable banner URL for item
   const initialBackground = item
-    ? optimizeImageUrl(item.background, 'background') ||
-      (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : initialPoster)
+    ? modalBannerCache.get(item.id) ||
+      optimizeImageUrl(cachedMeta?.background || item.background, 'background') ||
+      (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : '') ||
+      initialPoster
     : '';
+
+  if (item && initialBackground && !modalBannerCache.has(item.id)) {
+    modalBannerCache.set(item.id, initialBackground);
+  }
 
   // Initialize detail immediately with high-res assets to prevent loading delay
   const [detail, setDetail] = useState<StremioMetaDetail | null>(() =>
     item
       ? ({
           ...item,
+          ...(cachedMeta || {}),
           poster: initialPoster,
           background: initialBackground,
         } as StremioMetaDetail)
@@ -202,7 +214,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   };
 
   useEffect(() => {
-    if (!item) return;
+    if (!item?.id) return;
 
     // Reset scroll & states on item change
     setIsScrolled(false);
@@ -213,37 +225,61 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     }
 
     const curPoster =
-      optimizeImageUrl(item.poster, 'poster') ||
+      optimizeImageUrl(cachedMeta?.poster || item.poster, 'poster') ||
       (item.id?.startsWith('tt') ? `https://images.metahub.space/poster/medium/${item.id}/img` : '');
     const curBackground =
-      optimizeImageUrl(item.background, 'background') ||
+      modalBannerCache.get(item.id) ||
+      optimizeImageUrl(cachedMeta?.background || item.background, 'background') ||
       (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : curPoster);
 
-    // Instant presentation of item details
-    setDetail((prev) => ({
-      ...item,
-      poster: curPoster,
-      background: curBackground,
-      ...(prev?.id === item.id ? prev : {}),
-    } as StremioMetaDetail));
+    if (curBackground && !modalBannerCache.has(item.id)) {
+      modalBannerCache.set(item.id, curBackground);
+    }
+
+    // Instant presentation of item details only if id changed or not set
+    setDetail((prev) => {
+      if (prev && prev.id === item.id) {
+        return prev;
+      }
+      return {
+        ...item,
+        ...(cachedMeta || {}),
+        poster: curPoster,
+        background: curBackground,
+      } as StremioMetaDetail;
+    });
     setInLibrary(stremioService.isInLibrary(item.id));
 
     // Preload stream immediately in background for zero-wait playback
     stremioService.preloadStream(item.type, item.id);
 
-    // Enrich metadata in background without overwriting valid Italian title or cover
+    // Enrich metadata in background without overwriting valid Italian title or cover/backdrop
     stremioService
       .fetchMeta(item.type, item.id)
       .then((meta) => {
         if (!meta) return;
         setDetail((prev) => {
           if (!prev) return meta;
+
+          // Preserve locked background banner to prevent any double-fetch or flickering
+          const lockedBanner = modalBannerCache.get(item.id) || prev.background;
+          const hadRealBackground = lockedBanner && !lockedBanner.includes('/poster/') && lockedBanner !== prev.poster;
+          let finalBackground = lockedBanner;
+
+          if (!hadRealBackground && meta.background) {
+            finalBackground = optimizeImageUrl(meta.background, 'background') || meta.background;
+            modalBannerCache.set(item.id, finalBackground);
+          }
+
+          // Preserve the active poster
+          const finalPoster = prev.poster || meta.poster;
+
           return {
             ...meta,
             // Preserve canonical localized title and sharp cover
             name: prev.name || meta.name,
-            poster: meta.poster || prev.poster,
-            background: meta.background || prev.background,
+            poster: finalPoster,
+            background: finalBackground,
           };
         });
         if (meta.type === 'series' && meta.videos && meta.videos.length > 0) {
@@ -258,7 +294,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       .catch((err) => {
         console.warn('Meta background enrich failed', err);
       });
-  }, [item]);
+  }, [item?.id]);
 
   if (!item) return null;
 
@@ -354,12 +390,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
   // Best high-res trailer backdrop image
   const trailerBackdropImg =
-    detail?.background ||
-    (detail?.id?.startsWith('tt')
-      ? `https://images.metahub.space/background/medium/${detail.id}/img`
-      : null) ||
-    detail?.poster ||
-    item.poster ||
+    optimizeImageUrl(detail?.background || item.background, 'background') ||
+    (item?.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null) ||
+    optimizeImageUrl(detail?.poster || item.poster, 'poster') ||
     'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=1200&q=80';
 
   const releaseYear = getReleaseYear(detail?.releaseInfo);
@@ -544,16 +577,17 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           {/* Starts right at top 0, no black band */}
           <div className="relative h-72 sm:h-96 w-full overflow-hidden flex-shrink-0 bg-[#07070e]">
             <img
+              key={`banner-${item.id}`}
               src={
-                optimizeImageUrl(detail?.background, 'background') ||
-                (item?.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null) ||
-                optimizeImageUrl(detail?.poster || item.poster, 'poster') ||
-                (item?.id?.startsWith('tt') ? `https://images.metahub.space/poster/medium/${item.id}/img` : null) ||
+                modalBannerCache.get(item.id) ||
+                detail?.background ||
+                initialBackground ||
                 'https://images.unsplash.com/photo-1518709268805-4e9042af9f23?auto=format&fit=crop&w=1920&q=85'
               }
               alt={detail?.name || item.name}
               loading="eager"
-              decoding="sync"
+              decoding="async"
+              {...({ fetchPriority: 'high' } as any)}
               className="w-full h-full object-cover object-top filter brightness-100 contrast-110 saturate-140 transition-transform duration-700 ease-out hover:scale-105"
             />
 

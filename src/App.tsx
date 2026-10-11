@@ -4,10 +4,18 @@ import { LiquidBackground } from './components/LiquidBackground';
 import { Navbar } from './components/Navbar';
 import { CatalogBrowser } from './components/CatalogBrowser';
 import { LibraryView } from './components/LibraryView';
-import { MediaDetailModal } from './components/MediaDetailModal';
-import { LiquidPlayer } from './components/LiquidPlayer';
 import { LiveChannel } from './services/liveTvService';
-import { LiveStreamPlayerModal } from './components/LiveStreamPlayerModal';
+
+// Lazy-load heavy overlay modals for ultra-fast initial page load & minimal memory footprint
+const MediaDetailModal = React.lazy(() =>
+  import('./components/MediaDetailModal').then((m) => ({ default: m.MediaDetailModal }))
+);
+const LiquidPlayer = React.lazy(() =>
+  import('./components/LiquidPlayer').then((m) => ({ default: m.LiquidPlayer }))
+);
+const LiveStreamPlayerModal = React.lazy(() =>
+  import('./components/LiveStreamPlayerModal').then((m) => ({ default: m.LiveStreamPlayerModal }))
+);
 
 export default function App() {
   const [currentTab, setCurrentTab] = useState<ViewTab>('discover');

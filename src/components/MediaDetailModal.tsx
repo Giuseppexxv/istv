@@ -50,7 +50,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onClose,
   onPlayStream,
 }) => {
-  // Pre-calculate instant poster and backdrop from item to eliminate any render delay
+  // Pre-calculate instant poster, backdrop and title logo from item to eliminate any render delay
   const cachedMeta = item ? stremioService.getCachedMeta(item.type, item.id) : null;
   const initialPoster = item
     ? optimizeImageUrl(cachedMeta?.poster || item.poster, 'poster') ||
@@ -69,6 +69,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     modalBannerCache.set(item.id, initialBackground);
   }
 
+  // Pre-calculate official title logo asset (Metahub / Cinemeta transparent logo PNG)
+  const initialLogo = item
+    ? optimizeImageUrl(cachedMeta?.logo || item.logo, 'logo') ||
+      (item.id?.startsWith('tt') ? `https://images.metahub.space/logo/medium/${item.id}/img` : undefined)
+    : undefined;
+
   // Initialize detail immediately with high-res assets to prevent loading delay
   const [detail, setDetail] = useState<StremioMetaDetail | null>(() =>
     item
@@ -77,9 +83,11 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           ...(cachedMeta || {}),
           poster: initialPoster,
           background: initialBackground,
+          logo: initialLogo,
         } as StremioMetaDetail)
       : null
   );
+  const [logoError, setLogoError] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'episodes'>('overview');
   const [selectedSeason, setSelectedSeason] = useState<number>(1);
   const [inLibrary, setInLibrary] = useState(false);
@@ -219,6 +227,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     // Reset scroll & states on item change
     setIsScrolled(false);
     setTrailerActive(false);
+    setLogoError(false);
     setActiveTab('overview');
     if (scrollContainerRef.current) {
       scrollContainerRef.current.scrollTop = 0;
@@ -236,6 +245,10 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       modalBannerCache.set(item.id, curBackground);
     }
 
+    const curLogo =
+      optimizeImageUrl(cachedMeta?.logo || item.logo, 'logo') ||
+      (item.id?.startsWith('tt') ? `https://images.metahub.space/logo/medium/${item.id}/img` : undefined);
+
     // Instant presentation of item details only if id changed or not set
     setDetail((prev) => {
       if (prev && prev.id === item.id) {
@@ -246,6 +259,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
         ...(cachedMeta || {}),
         poster: curPoster,
         background: curBackground,
+        logo: curLogo,
       } as StremioMetaDetail;
     });
     setInLibrary(stremioService.isInLibrary(item.id));
@@ -273,13 +287,15 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
           // Preserve the active poster
           const finalPoster = prev.poster || meta.poster;
+          const finalLogo = meta.logo ? optimizeImageUrl(meta.logo, 'logo') : (prev.logo || curLogo);
 
           return {
             ...meta,
-            // Preserve canonical localized title and sharp cover
+            // Preserve canonical localized title, sharp cover, and official logo
             name: prev.name || meta.name,
             poster: finalPoster,
             background: finalBackground,
+            logo: finalLogo,
           };
         });
         if (meta.type === 'series' && meta.videos && meta.videos.length > 0) {
@@ -395,6 +411,13 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     optimizeImageUrl(detail?.poster || item.poster, 'poster') ||
     'https://images.unsplash.com/photo-1489599849927-2ee91cede3ba?auto=format&fit=crop&w=1200&q=80';
 
+  // Official title logo asset (Metahub / Cinemeta transparent logo PNG/JPEG)
+  const effectiveLogo = !logoError
+    ? detail?.logo ||
+      item?.logo ||
+      (item?.id?.startsWith('tt') ? `https://images.metahub.space/logo/medium/${item.id}/img` : null)
+    : null;
+
   const releaseYear = getReleaseYear(detail?.releaseInfo);
   const genresList = detail?.genres || item.genres || [];
   const genreText = genresList.length > 0 ? genresList.slice(0, 3).join(' • ') : null;
@@ -492,9 +515,17 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               pointerEvents: headerProgress > 0.3 ? 'auto' : 'none',
             }}
           >
-            <h3 className="font-poster-logo text-xl sm:text-2xl font-black text-white uppercase tracking-tight truncate drop-shadow-md">
-              {detail?.name || item.name}
-            </h3>
+            {effectiveLogo ? (
+              <img
+                src={effectiveLogo}
+                alt={detail?.name || item.name}
+                className="h-7 sm:h-8 max-w-[150px] sm:max-w-[210px] object-contain object-left drop-shadow-md"
+              />
+            ) : (
+              <h3 className="font-poster-logo text-xl sm:text-2xl font-black text-white uppercase tracking-tight truncate drop-shadow-md">
+                {detail?.name || item.name}
+              </h3>
+            )}
 
             <div className="hidden sm:flex items-center gap-2 flex-shrink-0">
               <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/35">
@@ -575,7 +606,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
         >
           {/* ================= BACKDROP BANNER ================= */}
           {/* Starts right at top 0, no black band */}
-          <div className="relative h-72 sm:h-96 w-full overflow-hidden flex-shrink-0 bg-[#07070e]">
+          <div className="relative h-80 sm:h-[400px] md:h-[450px] w-full overflow-hidden flex-shrink-0 bg-[#07070e]">
             <img
               key={`banner-${item.id}`}
               src={
@@ -616,10 +647,21 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             {/* Title and Unified Metadata inside Banner */}
             <div className="absolute bottom-5 sm:bottom-7 left-5 right-5 sm:left-8 sm:right-8 flex flex-col sm:flex-row sm:items-end justify-between gap-5 z-20">
               <div className="max-w-3xl space-y-2.5">
-                {/* Instant cinematic title */}
-                <h2 className="font-poster-logo text-3xl sm:text-5xl md:text-6xl font-black tracking-tight leading-none drop-shadow-[0_6px_25px_rgba(0,0,0,0.95)] uppercase text-white">
-                  {detail?.name || item.name}
-                </h2>
+                {/* Official Title Logo Image or Fallback Cinematic Text */}
+                {effectiveLogo ? (
+                  <div className="py-1">
+                    <img
+                      src={effectiveLogo}
+                      alt={detail?.name || item.name}
+                      onError={() => setLogoError(true)}
+                      className="h-16 sm:h-24 md:h-32 max-w-[85vw] sm:max-w-xl object-contain object-left drop-shadow-[0_8px_30px_rgba(0,0,0,0.95)]"
+                    />
+                  </div>
+                ) : (
+                  <h2 className="font-poster-logo text-3xl sm:text-5xl md:text-6xl font-black tracking-tight leading-none drop-shadow-[0_6px_25px_rgba(0,0,0,0.95)] uppercase text-white">
+                    {detail?.name || item.name}
+                  </h2>
+                )}
 
                 {/* Unified Media Metadata Row: Media, Anno, Categoria sotto il titolo */}
                 <div className="flex items-center gap-2 flex-wrap text-xs pt-1">

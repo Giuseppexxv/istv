@@ -1647,12 +1647,12 @@ async function startServer() {
         effectiveSubPath = `/stream/series/${targetId}:1:1.json`;
       }
 
-      // 1. Query Official Primary ToastFlix
-      let toastResponse = await fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 6500);
+      // 1. Query Official Primary ToastFlix (extended 20s timeout)
+      let toastResponse = await fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 20000);
 
-      // 2. Fast Fallback to standard ToastFlix if primary timed out or returned no streams
+      // 2. Fallback to standard ToastFlix if primary timed out or returned no streams
       if (!toastResponse || !Array.isArray(toastResponse.streams) || toastResponse.streams.length === 0) {
-        toastResponse = await fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 4500);
+        toastResponse = await fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 20000);
       }
 
       const rawStreams: any[] = Array.isArray(toastResponse?.streams) ? toastResponse.streams : [];

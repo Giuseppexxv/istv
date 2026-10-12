@@ -21,6 +21,7 @@ import {
   Languages,
   Subtitles as SubtitlesIcon,
   SkipForward,
+  Loader2,
 } from 'lucide-react';
 import {
   StremioMetaDetail,
@@ -177,7 +178,9 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     initialStream && (initialStream.url || initialStream.externalUrl) ? initialStream : null
   );
   const [activeVideo, setActiveVideo] = useState<StremioVideo | undefined>(initialVideo);
-  const [, setAvailableStreams] = useState<StremioStream[]>([]);
+  const [availableStreams, setAvailableStreams] = useState<StremioStream[]>([]);
+  const availableStreamsRef = useRef<StremioStream[]>([]);
+  const triedStreamsRef = useRef<Set<string>>(new Set());
 
   // Playback state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -295,6 +298,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     setIsPlaying(false);
     setIsLoading(true);
+    setHasStartedPlayback(false);
     setLoadingText(`Caricamento Stagione ${target.season || 1} • Episodio ${target.episode || 1}...`);
     setPlaybackError(null);
     setCurrentTime(0);
@@ -337,9 +341,16 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
   }, [nextVideo, media.type, allVideos, activeVideo]);
 
   // Loading & Diagnostics
-  const [, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [hasStartedPlayback, setHasStartedPlayback] = useState<boolean>(false);
   const [, setLoadingText] = useState<string>('Connessione in corso...');
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+
+  // 20s initial load watchdog timer ref
+  const startupWatchdogRef = useRef<any>(null);
+
+  // Indicates when the player hasn't started yet and stays at zero / buffering (show rotella)
+  const isWaitingToStart = isLoading || !hasStartedPlayback || (currentTime <= 0.2 && !isPlaying);
 
   // Resume playback refs
   const hasResumedRef = useRef(false);
@@ -359,11 +370,19 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
   }, [media.id, activeVideo?.id]);
 
-  // Hover Scrubber Preview
+  // Hover & Fluid Scrubbing State
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverPosition, setHoverPosition] = useState<number>(0);
+  const [isScrubbing, setIsScrubbing] = useState<boolean>(false);
+  const [scrubPosition, setScrubPosition] = useState<number | null>(null);
+  const [scrubTime, setScrubTime] = useState<number | null>(null);
 
+  const isScrubbingRef = useRef<boolean>(false);
+  const isPlayingRef = useRef<boolean>(false);
+  const showSettingsMenuRef = useRef<boolean>(false);
   const controlsTimeoutRef = useRef<any>(null);
+  const scrubberRef = useRef<HTMLDivElement>(null);
+  const lastScrubSeekRef = useRef<number>(0);
 
   // Fetch and parse active subtitle cues
   useEffect(() => {
@@ -494,8 +513,12 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     async function resolveStream() {
       setIsLoading(true);
+      setHasStartedPlayback(false);
       setLoadingText('Connessione in corso...');
       setPlaybackError(null);
+
+      const startTime = Date.now();
+      const MAX_WAIT_MS = 20000; // Allungato a 20 secondi come richiesto
 
       try {
         let streamTargetId = media.id;
@@ -523,8 +546,24 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           }
         }
 
-        // Fetch streams
-        const streams = await stremioService.fetchStreams(media.type, streamTargetId);
+        // Loop di ricerca flussi con retry fino a 20 secondi
+        let streams: StremioStream[] = [];
+        while (!isCancelled && Date.now() - startTime < MAX_WAIT_MS) {
+          try {
+            streams = await stremioService.fetchStreams(media.type, streamTargetId);
+            if (isCancelled) return;
+            if (streams && streams.length > 0) {
+              break;
+            }
+          } catch {}
+
+          if (Date.now() - startTime < MAX_WAIT_MS - 2500) {
+            await new Promise((r) => setTimeout(r, 2000));
+          } else {
+            break;
+          }
+        }
+
         if (isCancelled) return;
         setAvailableStreams(streams || []);
 
@@ -565,9 +604,21 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     if (!activeStream) return;
 
     setIsLoading(true);
+    setHasStartedPlayback(false);
     setPlaybackError(null);
     setAudioTracks([]);
     setQualityLevels([]);
+
+    // Watchdog esteso a 20 secondi: mostra avviso solo se dopo 20s non è ancora partita la riproduzione
+    if (startupWatchdogRef.current) clearTimeout(startupWatchdogRef.current);
+    startupWatchdogRef.current = setTimeout(() => {
+      if (!videoRef.current || videoRef.current.currentTime < 0.2) {
+        setIsLoading(false);
+        setPlaybackError(
+          'Flusso momentaneamente non raggiungibile dopo 20 secondi di attesa. Riprova più tardi.'
+        );
+      }
+    }, 20000);
 
     // Save to watch history with full metadata and preserved subtitle settings
     hasResumedRef.current = false;
@@ -707,6 +758,13 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (isClosingRef.current || isTransitioningRef.current) {
                   return;
                 }
+                // Se siamo ancora nei 20 secondi iniziali di avvio, ritenta senza mostrare subito l'errore
+                if (startupWatchdogRef.current) {
+                  try {
+                    hls.startLoad();
+                  } catch {}
+                  return;
+                }
                 hls.destroy();
                 setPlaybackError(
                   'Flusso momentaneamente non raggiungibile. Riprova più tardi.'
@@ -764,6 +822,10 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
 
     return () => {
+      if (startupWatchdogRef.current) {
+        clearTimeout(startupWatchdogRef.current);
+        startupWatchdogRef.current = null;
+      }
       if (!isTransitioningRef.current && videoRef.current && videoRef.current.currentTime > 5) {
         stremioService.savePlaybackProgress(
           media.id,
@@ -849,15 +911,63 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isPlaying, isMuted, volume, duration]);
 
-  const handleMouseMove = () => {
-    setShowControls(true);
+  // Keep state refs updated to prevent stale closures in timers
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    showSettingsMenuRef.current = showSettingsMenu;
+  }, [showSettingsMenu]);
+
+  useEffect(() => {
+    return () => {
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    };
+  }, []);
+
+  // Controls auto-hide manager
+  const resetControlsTimeout = useCallback(() => {
     if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+    if (isScrubbingRef.current || showSettingsMenuRef.current) return;
+
     controlsTimeoutRef.current = setTimeout(() => {
-      if (isPlaying) {
+      if (
+        (isPlayingRef.current || (videoRef.current && !videoRef.current.paused)) &&
+        !isScrubbingRef.current &&
+        !showSettingsMenuRef.current
+      ) {
         setShowControls(false);
-        setShowSettingsMenu(false);
       }
     }, 3500);
+  }, []);
+
+  // User activity on desktop or interactions
+  const handleUserActivity = useCallback(() => {
+    setShowControls(true);
+    resetControlsTimeout();
+  }, [resetControlsTimeout]);
+
+  // Mobile & Desktop backdrop tap/click: immediately toggles or dismisses controls without accidental pauses
+  const handleBackdropClick = (e: React.MouseEvent | React.TouchEvent) => {
+    e.stopPropagation();
+    if (showSettingsMenuRef.current) {
+      setShowSettingsMenu(false);
+      resetControlsTimeout();
+      return;
+    }
+
+    setShowControls((prev) => {
+      if (prev) {
+        // Controls currently visible -> tap immediately hides them!
+        if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+        return false;
+      } else {
+        // Controls hidden -> tap reveals them and starts auto-hide timer
+        resetControlsTimeout();
+        return true;
+      }
+    });
   };
 
   const togglePlay = () => {
@@ -873,6 +983,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         });
       }
       setIsPlaying(true);
+      resetControlsTimeout();
     } else {
       if (playPromiseRef.current) {
         playPromiseRef.current
@@ -890,6 +1001,8 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         videoRef.current.pause();
       }
       setIsPlaying(false);
+      setShowControls(true);
+      if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
     }
   };
 
@@ -905,6 +1018,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
       lastProgressSaveRef.current = nextT;
       stremioService.savePlaybackProgress(media.id, nextT, dur, activeVideo?.id);
     }
+    resetControlsTimeout();
   };
 
   const toggleMute = () => {
@@ -925,18 +1039,74 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
   };
 
+  // Enhanced PiP supporting standard W3C and iOS/iPadOS Safari WebKit Presentation Mode
   const togglePiP = async () => {
-    if (!videoRef.current) return;
+    const video = videoRef.current;
+    if (!video) return;
     try {
-      if (document.pictureInPictureElement) {
+      if (
+        typeof (video as any).webkitSupportsPresentationMode === 'function' &&
+        (video as any).webkitSupportsPresentationMode('picture-in-picture')
+      ) {
+        const currentMode = (video as any).webkitPresentationMode;
+        (video as any).webkitSetPresentationMode(
+          currentMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture'
+        );
+      } else if (document.pictureInPictureElement) {
         await document.exitPictureInPicture();
-      } else {
-        await videoRef.current.requestPictureInPicture();
+      } else if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === 'function') {
+        await video.requestPictureInPicture();
       }
     } catch {
       // PiP
     }
   };
+
+  // Automatic Picture-in-Picture on mobile and tablet when leaving site, backgrounding or switching apps
+  useEffect(() => {
+    if (videoRef.current) {
+      try {
+        (videoRef.current as any).autoPictureInPicture = true;
+      } catch {}
+    }
+
+    const handleVisibilityOrPageHide = async () => {
+      if (document.visibilityState !== 'hidden') return;
+      const video = videoRef.current;
+      if (!video) return;
+
+      const isActivelyPlaying = isPlayingRef.current || (!video.paused && video.currentTime > 0);
+      if (!isActivelyPlaying) return;
+
+      try {
+        // iOS / iPadOS Safari WebKit presentation mode
+        if (
+          typeof (video as any).webkitSupportsPresentationMode === 'function' &&
+          (video as any).webkitSupportsPresentationMode('picture-in-picture')
+        ) {
+          if ((video as any).webkitPresentationMode !== 'picture-in-picture') {
+            (video as any).webkitSetPresentationMode('picture-in-picture');
+          }
+        } else if (
+          document.pictureInPictureEnabled &&
+          typeof video.requestPictureInPicture === 'function' &&
+          document.pictureInPictureElement !== video
+        ) {
+          await video.requestPictureInPicture();
+        }
+      } catch {
+        // Handled silently
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrPageHide);
+    window.addEventListener('pagehide', handleVisibilityOrPageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrPageHide);
+      window.removeEventListener('pagehide', handleVisibilityOrPageHide);
+    };
+  }, []);
 
   const formatTime = (secs: number) => {
     if (isNaN(secs)) return '00:00';
@@ -949,23 +1119,89 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const handleScrubberMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    setHoverPosition(pos * 100);
-    setHoverTime(pos * (duration || 0));
+  // Fluid Scrubber calculations and seeking
+  const calcScrubPosition = (clientX: number): number => {
+    if (!scrubberRef.current) return 0;
+    const rect = scrubberRef.current.getBoundingClientRect();
+    if (rect.width <= 0) return 0;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
   };
 
-  const handleScrubberMouseLeave = () => {
-    setHoverTime(null);
+  const applyScrubSeek = (targetTime: number, isFinal: boolean = false) => {
+    if (!videoRef.current || !isFinite(targetTime)) return;
+    const now = Date.now();
+    // Throttled video seeking during continuous drag (~40ms / 25fps) to maintain silky fluid movement
+    if (isFinal || now - lastScrubSeekRef.current > 40) {
+      lastScrubSeekRef.current = now;
+      try {
+        videoRef.current.currentTime = targetTime;
+      } catch {}
+    }
   };
 
-  const handleScrubberClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  // Pointer event handlers (mouse and mobile pointer capture)
+  const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
+    isScrubbingRef.current = true;
+    setIsScrubbing(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+
+    const pos = calcScrubPosition(e.clientX);
     const dur = duration || (videoRef.current?.duration || 0);
     const target = pos * dur;
-    if (videoRef.current) {
+
+    setScrubPosition(pos * 100);
+    setScrubTime(target);
+    setHoverPosition(pos * 100);
+    setHoverTime(target);
+
+    applyScrubSeek(target, false);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const pos = calcScrubPosition(e.clientX);
+    const dur = duration || (videoRef.current?.duration || 0);
+    const target = pos * dur;
+
+    if (isScrubbingRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      setScrubPosition(pos * 100);
+      setScrubTime(target);
+      setHoverPosition(pos * 100);
+      setHoverTime(target);
+
+      applyScrubSeek(target, false);
+    } else if (e.pointerType === 'mouse') {
+      setHoverPosition(pos * 100);
+      setHoverTime(target);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+
+    isScrubbingRef.current = false;
+    setIsScrubbing(false);
+
+    const pos = calcScrubPosition(e.clientX);
+    const dur = duration || (videoRef.current?.duration || 0);
+    const target = pos * dur;
+
+    if (videoRef.current && isFinite(target)) {
       hasResumedRef.current = true;
       targetResumeTimeRef.current = 0;
       videoRef.current.currentTime = target;
@@ -975,6 +1211,91 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         stremioService.savePlaybackProgress(media.id, target, dur, activeVideo?.id);
       }
     }
+
+    setScrubPosition(null);
+    setScrubTime(null);
+    setHoverTime(null);
+    resetControlsTimeout();
+  };
+
+  const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {}
+    isScrubbingRef.current = false;
+    setIsScrubbing(false);
+    setScrubPosition(null);
+    setScrubTime(null);
+    setHoverTime(null);
+    resetControlsTimeout();
+  };
+
+  // Direct Mobile Touch Event Handlers for guaranteed compatibility
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!e.touches || e.touches.length === 0) return;
+    e.stopPropagation();
+    isScrubbingRef.current = true;
+    setIsScrubbing(true);
+    if (controlsTimeoutRef.current) clearTimeout(controlsTimeoutRef.current);
+
+    const touch = e.touches[0];
+    const pos = calcScrubPosition(touch.clientX);
+    const dur = duration || (videoRef.current?.duration || 0);
+    const target = pos * dur;
+
+    setScrubPosition(pos * 100);
+    setScrubTime(target);
+    setHoverPosition(pos * 100);
+    setHoverTime(target);
+    applyScrubSeek(target, false);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current || !e.touches || e.touches.length === 0) return;
+    e.stopPropagation();
+    const touch = e.touches[0];
+    const pos = calcScrubPosition(touch.clientX);
+    const dur = duration || (videoRef.current?.duration || 0);
+    const target = pos * dur;
+
+    setScrubPosition(pos * 100);
+    setScrubTime(target);
+    setHoverPosition(pos * 100);
+    setHoverTime(target);
+    applyScrubSeek(target, false);
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return;
+    e.stopPropagation();
+    isScrubbingRef.current = false;
+    setIsScrubbing(false);
+
+    const dur = duration || (videoRef.current?.duration || 0);
+    const target = scrubTime !== null ? scrubTime : (scrubPosition !== null ? (scrubPosition / 100) * dur : currentTime);
+
+    if (videoRef.current && isFinite(target)) {
+      hasResumedRef.current = true;
+      targetResumeTimeRef.current = 0;
+      videoRef.current.currentTime = target;
+      setCurrentTime(target);
+      if (dur > 0) {
+        lastProgressSaveRef.current = target;
+        stremioService.savePlaybackProgress(media.id, target, dur, activeVideo?.id);
+      }
+    }
+
+    setScrubPosition(null);
+    setScrubTime(null);
+    setHoverTime(null);
+    resetControlsTimeout();
+  };
+
+  const handleScrubberMouseLeave = () => {
+    if (!isScrubbingRef.current) {
+      setHoverTime(null);
+    }
   };
 
   const isExtractorMode = !activeStream?.url && !!activeStream?.externalUrl;
@@ -982,8 +1303,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
   return (
     <div
       ref={containerRef}
-      onMouseMove={handleMouseMove}
-      onTouchStart={handleMouseMove}
+      onMouseMove={handleUserActivity}
       className="fixed inset-0 z-50 bg-black flex items-center justify-center select-none overflow-hidden"
     >
       {/* Video Display Container */}
@@ -997,88 +1317,141 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
             sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"
           />
         ) : (
-          <video
-            ref={videoRef}
-            onClick={togglePlay}
-            onLoadedMetadata={() => {
-              if (videoRef.current) {
-                const newDur = videoRef.current.duration || 0;
-                setDuration(newDur);
-                if (isTransitioningRef.current) {
-                  videoRef.current.currentTime = 1;
-                  setCurrentTime(1);
-                } else {
+          <>
+            <video
+              ref={videoRef}
+              onPlay={() => {
+                setIsPlaying(true);
+                resetControlsTimeout();
+              }}
+              onPlaying={() => {
+                setIsPlaying(true);
+                setIsLoading(false);
+                setPlaybackError(null);
+                if (videoRef.current && videoRef.current.currentTime > 0.1) {
+                  setHasStartedPlayback(true);
+                }
+                if (startupWatchdogRef.current) {
+                  clearTimeout(startupWatchdogRef.current);
+                  startupWatchdogRef.current = null;
+                }
+                resetControlsTimeout();
+              }}
+              onLoadedMetadata={() => {
+                if (videoRef.current) {
+                  const newDur = videoRef.current.duration || 0;
+                  setDuration(newDur);
+                  if (isTransitioningRef.current) {
+                    videoRef.current.currentTime = 1;
+                    setCurrentTime(1);
+                  } else {
+                    checkAndApplyResume();
+                  }
+                  setTimeout(() => {
+                    isTransitioningRef.current = false;
+                    hasAutoAdvancedRef.current = false;
+                  }, 2000);
+                }
+              }}
+              onTimeUpdate={() => {
+                if (videoRef.current && !isScrubbingRef.current) {
+                  const cur = videoRef.current.currentTime;
+                  const dur = videoRef.current.duration || 0;
+                  setCurrentTime(cur);
+                  setDuration(dur);
+
+                  if (cur > 0.2) {
+                    setHasStartedPlayback(true);
+                    setIsLoading(false);
+                    if (startupWatchdogRef.current) {
+                      clearTimeout(startupWatchdogRef.current);
+                      startupWatchdogRef.current = null;
+                    }
+                  }
+
+                  // Reliable auto-advance to next episode ONLY when actively playing and reached end
+                  if (
+                    isPlaying &&
+                    !isTransitioningRef.current &&
+                    media.type === 'series' &&
+                    dur > 30 &&
+                    cur > 20 &&
+                    cur >= dur - 1.2 &&
+                    !hasAutoAdvancedRef.current
+                  ) {
+                    hasAutoAdvancedRef.current = true;
+                    handlePlayNextEpisode();
+                    return;
+                  }
+
+                  if (cur > 5 && Math.abs(cur - lastProgressSaveRef.current) >= 2.5) {
+                    lastProgressSaveRef.current = cur;
+                    stremioService.savePlaybackProgress(media.id, cur, dur, activeVideo?.id);
+                  }
+                }
+              }}
+              onPause={() => {
+                setIsPlaying(false);
+                if (!isTransitioningRef.current && videoRef.current && videoRef.current.currentTime > 5) {
+                  stremioService.savePlaybackProgress(media.id, videoRef.current.currentTime, videoRef.current.duration || 0, activeVideo?.id);
+                }
+              }}
+              onWaiting={() => setIsLoading(true)}
+              onCanPlay={() => {
+                setIsLoading(false);
+                setPlaybackError(null);
+                if (videoRef.current && videoRef.current.currentTime > 0.1) {
+                  setHasStartedPlayback(true);
+                  if (startupWatchdogRef.current) {
+                    clearTimeout(startupWatchdogRef.current);
+                    startupWatchdogRef.current = null;
+                  }
+                }
+                if (!hasResumedRef.current) {
                   checkAndApplyResume();
                 }
-                setTimeout(() => {
-                  isTransitioningRef.current = false;
-                  hasAutoAdvancedRef.current = false;
-                }, 2000);
-              }
-            }}
-            onTimeUpdate={() => {
-              if (videoRef.current) {
-                const cur = videoRef.current.currentTime;
-                const dur = videoRef.current.duration || 0;
-                setCurrentTime(cur);
-                setDuration(dur);
-
-                // Reliable auto-advance to next episode ONLY when actively playing and reached end
-                if (
-                  isPlaying &&
-                  !isTransitioningRef.current &&
-                  media.type === 'series' &&
-                  dur > 30 &&
-                  cur > 20 &&
-                  cur >= dur - 1.2 &&
-                  !hasAutoAdvancedRef.current
-                ) {
-                  hasAutoAdvancedRef.current = true;
-                  handlePlayNextEpisode();
+              }}
+              onError={() => {
+                if (isClosingRef.current || isTransitioningRef.current || !videoRef.current?.src) {
                   return;
                 }
-
-                if (cur > 5 && Math.abs(cur - lastProgressSaveRef.current) >= 2.5) {
-                  lastProgressSaveRef.current = cur;
-                  stremioService.savePlaybackProgress(media.id, cur, dur, activeVideo?.id);
+                // Se siamo ancora nei 20 secondi iniziali di avvio, ritenta senza dare subito errore
+                if (startupWatchdogRef.current) {
+                  try {
+                    videoRef.current?.load();
+                  } catch {}
+                  return;
                 }
-              }
-            }}
-            onPause={() => {
-              setIsPlaying(false);
-              if (!isTransitioningRef.current && videoRef.current && videoRef.current.currentTime > 5) {
-                stremioService.savePlaybackProgress(media.id, videoRef.current.currentTime, videoRef.current.duration || 0, activeVideo?.id);
-              }
-            }}
-            onWaiting={() => setIsLoading(true)}
-            onCanPlay={() => {
-              setIsLoading(false);
-              setPlaybackError(null);
-              if (!hasResumedRef.current) {
-                checkAndApplyResume();
-              }
-            }}
-            onError={() => {
-              if (isClosingRef.current || isTransitioningRef.current || !videoRef.current?.src) {
-                return;
-              }
-              setIsLoading(false);
-              setPlaybackError(
-                'Impossibile riprodurre il flusso. Il server sorgente potrebbe essere temporaneamente occupato.'
-              );
-            }}
-            onEnded={() => {
-              setIsPlaying(false);
-              if (!isTransitioningRef.current && media.type === 'series' && !hasAutoAdvancedRef.current) {
-                hasAutoAdvancedRef.current = true;
-                handlePlayNextEpisode();
-              }
-            }}
-            className="w-full h-full cursor-pointer object-contain"
-            autoPlay
-            playsInline
-            controls={false}
-          />
+                setIsLoading(false);
+                setPlaybackError(
+                  'Impossibile riprodurre il flusso. Il server sorgente potrebbe essere temporaneamente occupato.'
+                );
+              }}
+              onEnded={() => {
+                setIsPlaying(false);
+                if (!isTransitioningRef.current && media.type === 'series' && !hasAutoAdvancedRef.current) {
+                  hasAutoAdvancedRef.current = true;
+                  handlePlayNextEpisode();
+                }
+              }}
+              className="w-full h-full object-contain"
+              autoPlay
+              playsInline
+              controls={false}
+              {...({
+                autopictureinpicture: 'true',
+                'webkit-playsinline': 'true',
+                'x-webkit-airplay': 'allow',
+              } as any)}
+            />
+
+            {/* Tap/Click Backdrop to immediately toggle controls or hide them without pausing */}
+            <div
+              className="absolute inset-0 z-20 cursor-pointer"
+              onClick={handleBackdropClick}
+              onDoubleClick={toggleFullscreen}
+            />
+          </>
         )}
 
         {/* High-visibility Custom Subtitles Overlay - Background adapts to text size */}
@@ -1214,6 +1587,15 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         </div>
       </div>
 
+      {/* Rotella centrale visibile mentre non parte / sta a zero se i controlli sono nascosti */}
+      {!isExtractorMode && isWaitingToStart && !showControls && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 transition-opacity duration-300">
+          <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-full liquid-glass-transparent text-white flex items-center justify-center shadow-[0_0_35px_rgba(255,255,255,0.25)] border border-white/35 backdrop-blur-2xl">
+            <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 text-white animate-spin drop-shadow-[0_0_15px_rgba(255,255,255,0.9)]" />
+          </div>
+        </div>
+      )}
+
       {/* ================= CENTER PLAYBACK CONTROLS ================= */}
       {!isExtractorMode && (
         <div
@@ -1240,14 +1622,16 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
               />
             </button>
 
-            {/* Play / Pausa (al centro) - Bolla trasparente senza rosso */}
+            {/* Play / Pausa / Rotella (al centro) - Mostra la rotella quando sta a zero o non parte */}
             <button
               type="button"
               onClick={togglePlay}
               className="w-16 h-16 sm:w-20 sm:h-20 rounded-full liquid-glass-transparent hover:bg-white/25 text-white flex items-center justify-center shadow-[0_0_30px_rgba(255,255,255,0.15)] transition-all hover:scale-110 active:scale-95 cursor-pointer border border-white/35 backdrop-blur-2xl"
-              title={isPlaying ? 'Pausa (Spazio)' : 'Riproduci (Spazio)'}
+              title={isWaitingToStart ? 'Caricamento in corso...' : isPlaying ? 'Pausa (Spazio)' : 'Riproduci (Spazio)'}
             >
-              {isPlaying ? (
+              {isWaitingToStart ? (
+                <Loader2 className="w-8 h-8 sm:w-10 sm:h-10 text-white animate-spin drop-shadow-[0_0_15px_rgba(255,255,255,0.9)]" />
+              ) : isPlaying ? (
                 <Pause className="w-7 h-7 sm:w-9 sm:h-9 fill-current" />
               ) : (
                 <Play className="w-7 h-7 sm:w-9 sm:h-9 fill-current ml-1" />
@@ -1283,35 +1667,47 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           }`}
         >
           <div className="liquid-glass-transparent rounded-2xl p-3 sm:p-4 border border-white/20 shadow-2xl backdrop-blur-2xl space-y-2.5">
-            {/* Scrubber progress bar */}
+            {/* Scrubber progress bar - Full fluid touch drag support on mobile and mouse */}
             <div
-              className="relative group/bar h-4 flex items-center cursor-pointer"
-              onMouseMove={handleScrubberMouseMove}
+              ref={scrubberRef}
+              className="relative group/bar h-8 sm:h-6 py-2 sm:py-1.5 flex items-center cursor-pointer select-none touch-none"
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={handlePointerCancel}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
+              onTouchCancel={handleTouchEnd}
               onMouseLeave={handleScrubberMouseLeave}
-              onClick={handleScrubberClick}
             >
-              <div className="w-full h-1.5 group-hover/bar:h-2.5 bg-white/20 rounded-full overflow-hidden transition-all duration-150 relative">
+              {/* Progress background track - Continuous unbroken timeline */}
+              <div className="w-full h-1.5 group-hover/bar:h-2 sm:group-hover/bar:h-2.5 bg-white/20 rounded-full overflow-hidden transition-all duration-150 relative">
                 <div
                   className="h-full bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.7)]"
                   style={{
-                    width: `${duration > 0 ? (currentTime / duration) * 100 : 0}%`,
+                    width: `${
+                      isScrubbing && scrubPosition !== null
+                        ? scrubPosition
+                        : duration > 0
+                        ? (currentTime / duration) * 100
+                        : 0
+                    }%`,
                   }}
                 />
               </div>
 
-              {hoverTime !== null && (
+              {/* Time preview tooltip over finger/cursor */}
+              {(isScrubbing || hoverTime !== null) && (
                 <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-white/80 pointer-events-none"
-                  style={{ left: `${hoverPosition}%` }}
-                />
-              )}
-
-              {hoverTime !== null && (
-                <div
-                  className="absolute -top-7 -translate-x-1/2 px-2 py-0.5 rounded-md bg-slate-900/90 text-white text-[10px] font-mono font-bold border border-white/20 pointer-events-none shadow-lg backdrop-blur-md"
-                  style={{ left: `${hoverPosition}%` }}
+                  className="absolute -top-7 -translate-x-1/2 px-2.5 py-0.5 rounded-md bg-slate-900/95 text-white text-[10px] sm:text-[11px] font-mono font-bold border border-white/25 pointer-events-none shadow-xl backdrop-blur-md"
+                  style={{
+                    left: `${
+                      isScrubbing && scrubPosition !== null ? scrubPosition : hoverPosition
+                    }%`,
+                  }}
                 >
-                  {formatTime(hoverTime)}
+                  {formatTime(isScrubbing && scrubTime !== null ? scrubTime : hoverTime || 0)}
                 </div>
               )}
             </div>
@@ -1320,7 +1716,9 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
             <div className="flex items-center justify-between">
               {/* Minutaggio / Tempo trascorso e totale */}
               <div className="flex items-center gap-1 text-[10px] sm:text-[11px] font-mono font-semibold text-slate-400">
-                <span className="text-white font-bold">{formatTime(currentTime)}</span>
+                <span className="text-white font-bold">
+                  {formatTime(isScrubbing && scrubTime !== null ? scrubTime : currentTime)}
+                </span>
                 <span className="text-slate-500">/</span>
                 <span>{formatTime(duration)}</span>
               </div>
@@ -1593,6 +1991,9 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           </div>
         </div>
       )}
+
+      {/* Continuous bottom progress line removed as requested */}
+
       {/* ================= POPUP PROSSIMO EPISODIO NEGLI ULTIMI MINUTI ================= */}
       {showNextEpisodePrompt && nextVideo && (
         <div className="absolute bottom-28 sm:bottom-32 right-4 sm:right-8 z-50 animate-in fade-in slide-in-from-bottom-3 duration-200 pointer-events-auto">

@@ -10,6 +10,7 @@ import {
   VolumeX,
   Play,
   Pause,
+  Loader2,
 } from 'lucide-react';
 import { LiveChannel } from '../services/liveTvService';
 
@@ -47,6 +48,11 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
   // Fallback player URL
   const proxiedWebUrl = `/api/live-proxy?id=${channel.id}`;
 
+  const isPlayingRef = useRef<boolean>(true);
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
   // Controls visibility timeout
   const resetControlsTimeout = useCallback(() => {
     setShowControls(true);
@@ -56,6 +62,49 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     hideControlsTimerRef.current = setTimeout(() => {
       setShowControls(false);
     }, 4500);
+  }, []);
+
+  // Automatic Picture-in-Picture on mobile and tablet when leaving site, backgrounding or switching apps
+  useEffect(() => {
+    if (videoRef.current) {
+      try {
+        (videoRef.current as any).autoPictureInPicture = true;
+      } catch {}
+    }
+
+    const handleVisibilityOrPageHide = async () => {
+      if (document.visibilityState !== 'hidden') return;
+      const video = videoRef.current;
+      if (!video) return;
+
+      const isActivelyPlaying = isPlayingRef.current || (!video.paused && video.currentTime > 0);
+      if (!isActivelyPlaying) return;
+
+      try {
+        if (
+          typeof (video as any).webkitSupportsPresentationMode === 'function' &&
+          (video as any).webkitSupportsPresentationMode('picture-in-picture')
+        ) {
+          if ((video as any).webkitPresentationMode !== 'picture-in-picture') {
+            (video as any).webkitSetPresentationMode('picture-in-picture');
+          }
+        } else if (
+          document.pictureInPictureEnabled &&
+          typeof video.requestPictureInPicture === 'function' &&
+          document.pictureInPictureElement !== video
+        ) {
+          await video.requestPictureInPicture();
+        }
+      } catch {}
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrPageHide);
+    window.addEventListener('pagehide', handleVisibilityOrPageHide);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityOrPageHide);
+      window.removeEventListener('pagehide', handleVisibilityOrPageHide);
+    };
   }, []);
 
   // 1. Resolve Direct HLS Stream on mount or channel/reload change
@@ -68,7 +117,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
     const fetchDirectStream = async () => {
       try {
         const resp = await fetch(`/api/live-stream?id=${channel.id}&refresh=${playerKey > 0 ? '1' : '0'}`, {
-          signal: AbortSignal.timeout(10000),
+          signal: AbortSignal.timeout(20000),
         });
 
         if (!resp.ok) {
@@ -509,6 +558,11 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
             playsInline
             muted={isMuted}
             onClick={togglePlay}
+            {...({
+              autopictureinpicture: 'true',
+              'webkit-playsinline': 'true',
+              'x-webkit-airplay': 'allow',
+            } as any)}
             onError={(e) => {
               console.warn('[Live Video Error] Playback issue, switching to fallback:', e);
               if (hlsRef.current) {
@@ -551,7 +605,13 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
               className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl liquid-glass-transparent hover:bg-white/20 text-slate-200 hover:text-white flex items-center justify-center transition-all cursor-pointer active:scale-95 border border-white/20 shadow-md"
               title={isPlaying ? 'Pausa (Spazio)' : 'Riproduci (Spazio)'}
             >
-              {isPlaying ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current ml-0.5" />}
+              {isLoadingStream ? (
+                <Loader2 className="w-4 h-4 text-white animate-spin" />
+              ) : isPlaying ? (
+                <Pause className="w-4 h-4 fill-current" />
+              ) : (
+                <Play className="w-4 h-4 fill-current ml-0.5" />
+              )}
             </button>
 
             {/* Mute / Unmute */}

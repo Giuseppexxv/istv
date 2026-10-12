@@ -605,7 +605,7 @@ class StremioService {
         const url = `${addon.transportUrl}/stream/${type}/${id}.json`;
         let resp: Response | null = null;
         const fetchOpts: RequestInit = {
-          signal: AbortSignal.timeout(6500),
+          signal: AbortSignal.timeout(20000),
           headers: { Priority: 'u=0, i' },
           ...({ priority: 'high' } as any),
         };

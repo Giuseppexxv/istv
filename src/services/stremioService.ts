@@ -7,7 +7,8 @@ import {
   StremioSubtitle,
 } from '../types/stremio';
 import { optimizeImageUrl } from '../utils/imageOptimizer';
-import { filterReleasedItems } from '../utils/releaseFilter';
+import { filterReleasedItems, rankFamousItems } from '../utils/releaseFilter';
+import { BENCHMARK_METADATA } from './dayNightCatalogService';
 
 const ADDONS_STORAGE_KEY = 'liquid_stremio_addons_v5';
 const HISTORY_STORAGE_KEY = 'liquid_stremio_history_v1';
@@ -457,8 +458,8 @@ class StremioService {
         }
       }
 
-      // Filter results to guarantee that only already released titles are returned
-      const filteredResults = filterReleasedItems(results);
+      // Filter results to guarantee that only already released titles are returned, ranked by query relevance if searching
+      const filteredResults = filterReleasedItems(results, undefined, undefined, extra?.search);
 
       this.catalogCache.set(cacheKey, { data: filteredResults, expires: now + 30 * 60 * 1000 });
       this.savePersistentCatalogCache();
@@ -469,7 +470,7 @@ class StremioService {
     }
   }
 
-  // Search movies and series across default catalogs
+  // Search movies and series across default catalogs with intelligent ranking
   public async search(query: string): Promise<StremioMetaPreview[]> {
     if (!query || !query.trim()) return [];
     const q = query.trim();
@@ -479,12 +480,50 @@ class StremioService {
         this.fetchCatalog('official.catalog', 'series', 'top', { search: q }),
       ]);
       const combined = [...movies, ...series];
+
+      // Enrich catalog search results with verified benchmark metadata (accurate rating, release year, genres)
+      for (const item of combined) {
+        if (item.id && BENCHMARK_METADATA[item.id]) {
+          const bench = BENCHMARK_METADATA[item.id];
+          if (!item.imdbRating || item.imdbRating === '0' || item.imdbRating === 'N/A') {
+            item.imdbRating = bench.rating.toFixed(1);
+          }
+          if (bench.genres && (!item.genres || item.genres.length === 0)) {
+            item.genres = bench.genres;
+          }
+          if (bench.year && !item.releaseInfo) {
+            item.releaseInfo = bench.year;
+          }
+        }
+      }
+
+      // If any acclaimed curated benchmark title matches query and was missing, add it
+      const lowerQ = q.toLowerCase();
+      for (const [id, meta] of Object.entries(BENCHMARK_METADATA)) {
+        if (meta.name.toLowerCase().includes(lowerQ) || lowerQ.includes(meta.name.toLowerCase())) {
+          if (!combined.some((c) => c.id === id)) {
+            combined.push({
+              id,
+              type: meta.genres?.includes('Cinema') ? 'movie' : 'series',
+              name: meta.name,
+              poster: `https://images.metahub.space/poster/medium/${id}/img`,
+              releaseInfo: meta.year,
+              imdbRating: meta.rating.toFixed(1),
+              genres: meta.genres || ['Cinema'],
+            });
+          }
+        }
+      }
+
       const seen = new Set<string>();
-      return combined.filter((item) => {
+      const unique = combined.filter((item) => {
         if (!item || !item.id || seen.has(item.id)) return false;
         seen.add(item.id);
         return true;
       });
+
+      // Sort combined movie + series search results by precision match score
+      return rankFamousItems(unique, q);
     } catch {
       return [];
     }
@@ -667,14 +706,15 @@ class StremioService {
         title.includes('italiano');
 
       let score = 0;
-      if (hasUrl) score += 2500;
-      if (isHls) score += 2000;
-      if (is1080p) score += 1500;
-      else if (name.includes('4k') || title.includes('4k') || name.includes('2160p')) score += 1000;
-      else if (name.includes('720p') || title.includes('720p') || name.includes('hd')) score += 600;
-      if (isIta) score += 1200;
-      if (name.includes('toastflix') || name.includes('🥪')) score += 400;
-      if (name.includes('🚀') || name.includes('🎯')) score += 300;
+      if (hasUrl) score += 4000;
+      if (isIta) score += 3000; // Priorità assoluta lingua italiana
+      if (isHls) score += 2500; // Priorità HLS adattivo per avvio istantaneo
+      if (is1080p) score += 2000; // Risoluzione 1080p FHD
+      else if (name.includes('4k') || title.includes('4k') || name.includes('2160p')) score += 1200;
+      else if (name.includes('720p') || title.includes('720p') || name.includes('hd')) score += 800;
+      if (name.includes('toastflix') || name.includes('🥪')) score += 1000;
+      if (name.includes('🚀') || name.includes('🎯')) score += 800;
+      if (rawUrl.startsWith('/api/stream-proxy')) score += 600; // Pre-elaborato da proxy server senza CORS
       return score;
     };
 

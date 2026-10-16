@@ -546,10 +546,15 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           }
         }
 
-        // Loop di ricerca flussi con retry fino a 20 secondi
+        // Loop di ricerca flussi ad oltranza senza timeout di 20s
         let streams: StremioStream[] = [];
-        while (!isCancelled && Date.now() - startTime < MAX_WAIT_MS) {
+        let attempt = 0;
+        while (!isCancelled) {
           try {
+            attempt++;
+            if (attempt > 3) {
+              setLoadingText('Ricerca flussi in corso...');
+            }
             streams = await stremioService.fetchStreams(media.type, streamTargetId);
             if (isCancelled) return;
             if (streams && streams.length > 0) {
@@ -557,11 +562,8 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
             }
           } catch {}
 
-          if (Date.now() - startTime < MAX_WAIT_MS - 2500) {
-            await new Promise((r) => setTimeout(r, 2000));
-          } else {
-            break;
-          }
+          // Attendi prima del prossimo tentativo ad oltranza
+          await new Promise((r) => setTimeout(r, 2500));
         }
 
         if (isCancelled) return;
@@ -571,16 +573,10 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           const directStream = streams.find((s) => s.url && s.url.length > 0);
           const chosen = directStream || streams[0];
           setActiveStream(chosen);
-        } else {
-          setIsLoading(false);
-          setPlaybackError(
-            'Nessun flusso di riproduzione al momento disponibile per questo titolo. Riprova più tardi.'
-          );
         }
       } catch (err: any) {
         if (isCancelled) return;
-        setIsLoading(false);
-        setPlaybackError('Impossibile stabilire la connessione con la sorgente. Riprova più tardi.');
+        // Non bloccare con avvisi: ritenta silenziosamente
       }
     }
 
@@ -609,16 +605,11 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     setAudioTracks([]);
     setQualityLevels([]);
 
-    // Watchdog esteso a 20 secondi: mostra avviso solo se dopo 20s non è ancora partita la riproduzione
-    if (startupWatchdogRef.current) clearTimeout(startupWatchdogRef.current);
-    startupWatchdogRef.current = setTimeout(() => {
-      if (!videoRef.current || videoRef.current.currentTime < 0.2) {
-        setIsLoading(false);
-        setPlaybackError(
-          'Flusso momentaneamente non raggiungibile dopo 20 secondi di attesa. Riprova più tardi.'
-        );
-      }
-    }, 20000);
+    // Nessun avviso di timeout o blocco dopo 20s: continua la riproduzione ad oltranza
+    if (startupWatchdogRef.current) {
+      clearTimeout(startupWatchdogRef.current);
+      startupWatchdogRef.current = null;
+    }
 
     // Save to watch history with full metadata and preserved subtitle settings
     hasResumedRef.current = false;
@@ -664,13 +655,23 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         const targetTime = targetResumeTimeRef.current || stremioService.getSavedPlaybackTime(media.id, activeVideo?.id);
 
         const hls = new Hls({
-          maxBufferLength: 25,
-          maxMaxBufferLength: 50,
+          maxBufferLength: 30,
+          maxMaxBufferLength: 60,
           enableWorker: true,
           lowLatencyMode: true,
           startFragPrefetch: true,
           capLevelToPlayerSize: true,
           startPosition: targetTime >= 1 ? targetTime : 1,
+          // High fault-tolerance for busy servers during peak hours:
+          manifestLoadingTimeOut: 20000,
+          manifestLoadingMaxRetry: 6,
+          manifestLoadingRetryDelay: 1000,
+          levelLoadingTimeOut: 20000,
+          levelLoadingMaxRetry: 6,
+          levelLoadingRetryDelay: 1000,
+          fragLoadingTimeOut: 25000,
+          fragLoadingMaxRetry: 8,
+          fragLoadingRetryDelay: 1000,
         });
 
         hls.loadSource(resolvedUrl);
@@ -745,10 +746,22 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           setSelectedAudioTrack(data.id);
         });
 
+        let networkErrorCount = 0;
         hls.on(Hls.Events.ERROR, (_event, data) => {
           if (data.fatal) {
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
+                networkErrorCount++;
+                // If the current stream server has failed repeatedly and alternatives exist, automatically switch to backup stream
+                if (networkErrorCount >= 4 && availableStreams.length > 1) {
+                  const currentIdx = availableStreams.findIndex((s) => s.url === activeStream.url);
+                  const nextStream = availableStreams[(currentIdx + 1) % availableStreams.length];
+                  if (nextStream && nextStream.url !== activeStream.url) {
+                    console.log('[LiquidPlayer] Flusso occupato/non raggiungibile. Passaggio automatico al flusso alternativo:', nextStream.name);
+                    setActiveStream(nextStream);
+                    return;
+                  }
+                }
                 hls.startLoad();
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
@@ -758,18 +771,16 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (isClosingRef.current || isTransitioningRef.current) {
                   return;
                 }
-                // Se siamo ancora nei 20 secondi iniziali di avvio, ritenta senza mostrare subito l'errore
-                if (startupWatchdogRef.current) {
-                  try {
-                    hls.startLoad();
-                  } catch {}
-                  return;
+                // Try to recover or fallback
+                try {
+                  hls.startLoad();
+                } catch {
+                  setTimeout(() => {
+                    if (hlsRef.current) {
+                      try { hlsRef.current.startLoad(); } catch {}
+                    }
+                  }, 2000);
                 }
-                hls.destroy();
-                setPlaybackError(
-                  'Flusso momentaneamente non raggiungibile. Riprova più tardi.'
-                );
-                setIsLoading(false);
                 break;
             }
           }

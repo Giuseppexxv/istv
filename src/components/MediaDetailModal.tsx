@@ -743,7 +743,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
           {/* ================= TAB CONTENT AREA (Reduced Spacing) ================= */}
           <div className="px-5 sm:px-8 pt-3 pb-8 space-y-6">
-            {/* ================= TAB 1: PANORAMICA & TRAMA ================= */}
+            {/* ================= TAB 1: PANORAMICA & SCHEDA ================= */}
             {activeTab === 'overview' && (
               <div className="space-y-8 animate-in fade-in duration-200">
                 {/* 1. TRAMA / SINOSSI UFFICIALE */}

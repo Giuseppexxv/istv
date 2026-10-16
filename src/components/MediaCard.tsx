@@ -87,6 +87,15 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
   const isMovie = item.type === 'movie';
   const typeLabel = isMovie ? 'Film' : 'Serie TV';
 
+  // Sanitize title so raw IDs (like tt0436992) or codes never leak to the UI
+  const displayName = React.useMemo(() => {
+    const raw = item.name || '';
+    if (!raw || /^tt\d+$/i.test(raw) || /^kitsu:\d+$/i.test(raw) || /^tmdb:\d+$/i.test(raw)) {
+      return isMovie ? 'Film' : 'Serie TV';
+    }
+    return raw;
+  }, [item.name, isMovie]);
+
   const effectiveGenres = item.genres;
   const genreLabel =
     effectiveGenres && effectiveGenres.length > 0
@@ -152,21 +161,22 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
         {/* Bottom Ambient Dark Gradient Scrim */}
         <div className="absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-[#0e0e18] via-[#0e0e18]/80 to-transparent pointer-events-none z-10" />
 
-        {/* Top Header Bar: Type Badge, Rank, Rating and Remove Pallino */}
+        {/* Top Header Bar: Type Badge (Film / Serie TV), Rank, e Valutazione tutta a destra */}
         <div className="absolute top-2.5 inset-x-2.5 z-30 flex items-center justify-between pointer-events-none">
-          {/* Left: Type Badge (Serie TV / Film) & Rating (Valutazione) aligned side-by-side */}
+          {/* Left: Pillola Tipo Film / Serie TV con contrasto nitido (solo se NON è in una top con rank) e eventuale Rank */}
           <div className="flex items-center gap-1.5 flex-wrap">
-            {/* Pillola Tipo Film / Serie con contrasto nitido e zero carico GPU */}
-            <div className="flex items-center gap-1.5 text-[10px] font-black px-2 py-0.5 rounded-lg bg-[#0e0e18]/90 border border-white/20 text-white shadow-md">
-              {isMovie ? (
-                <Film className="w-3 h-3 text-rose-400" />
-              ) : (
-                <Tv className="w-3 h-3 text-purple-400" />
-              )}
-              <span className="font-black tracking-wide text-white">{typeLabel}</span>
-            </div>
+            {rank === undefined && (
+              <div className="flex items-center gap-1.5 text-[10px] font-black px-2 py-0.5 rounded-lg bg-[#0e0e18]/90 border border-white/20 text-white shadow-md">
+                {isMovie ? (
+                  <Film className="w-3 h-3 text-rose-400" />
+                ) : (
+                  <Tv className="w-3 h-3 text-purple-400" />
+                )}
+                <span className="font-black tracking-wide text-white">{typeLabel}</span>
+              </div>
+            )}
 
-            {/* Rank Badge (#1, #2, #3, ...) presente nelle altre mini-schede */}
+            {/* Rank Badge (#1, #2, #3, ...) presente nelle sezioni top / classifiche */}
             {rank !== undefined && rank <= 10 && (
               <div>
                 {rank === 1 ? (
@@ -202,39 +212,15 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
                 )}
               </div>
             )}
-
-            {/* Nei salvati: badge sTV allineato con la valutazione (Rating) */}
-            {onRemove && displayRating && (
-              <div className="flex items-center gap-1 text-[10px] sm:text-[11px] font-black text-amber-300 px-2 py-0.5 rounded-lg bg-black/85 border border-amber-400/40 shadow-md">
-                <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                <span className="font-black">{displayRating}</span>
-              </div>
-            )}
           </div>
 
-          {/* Right: Pallino per cancellare nei salvati, oppure Valutazione nelle sezioni standard */}
+          {/* Right: Valutazione tutta a destra in alto */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            {!onRemove && displayRating && (
-              <div className="flex items-center gap-1 text-[11px] font-black text-amber-300 px-2.5 py-0.5 rounded-lg bg-black/85 border border-amber-400/40 shadow-md pointer-events-none">
+            {displayRating && (
+              <div className="flex items-center gap-1 text-[10px] sm:text-[11px] font-black text-amber-300 px-2 sm:px-2.5 py-0.5 rounded-lg bg-black/85 border border-amber-400/40 shadow-md pointer-events-none">
                 <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
                 <span className="font-black">{displayRating}</span>
               </div>
-            )}
-
-            {onRemove && (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  onRemove(item);
-                }}
-                className="pointer-events-auto w-7 h-7 sm:w-7.5 sm:h-7.5 rounded-full bg-black/85 hover:bg-rose-600 text-white/90 hover:text-white border border-white/30 hover:border-rose-400 flex items-center justify-center transition-all duration-200 cursor-pointer shadow-lg active:scale-90"
-                title="Rimuovi dalla libreria"
-                aria-label="Rimuovi dalla libreria"
-              >
-                <X className="w-3.5 h-3.5 stroke-[2.5]" />
-              </button>
             )}
           </div>
         </div>
@@ -285,9 +271,9 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
         <div>
           <h4
             className="text-xs sm:text-sm font-bold text-white line-clamp-1 leading-snug group-hover:text-red-400 transition-colors"
-            title={item.name}
+            title={displayName}
           >
-            {item.name}
+            {displayName}
           </h4>
 
           <div className="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1 font-medium">

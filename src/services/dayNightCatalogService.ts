@@ -895,6 +895,20 @@ export const BENCHMARK_METADATA: Record<string, { name: string; year: string; ra
   'tt5830254': { name: 'Das Boot', year: '2018', rating: 7.4, genres: ['Dramma', 'Guerra'] },
   'tt3577058': { name: 'Gallipoli', year: '2015', rating: 7.6, genres: ['Dramma', 'Guerra'] },
   'tt8001092': { name: 'World on Fire', year: '2019', rating: 7.2, genres: ['Dramma', 'Guerra'] },
+
+  // Additional Curated Cult Series & Movies
+  'tt0436992': { name: 'Doctor Who', year: '2005', rating: 8.5, genres: ['Fantascienza', 'Avventura'] },
+  'tt2085059': { name: 'Black Mirror', year: '2011', rating: 8.7, genres: ['Fantascienza', 'Thriller'] },
+  'tt5875444': { name: 'Slow Horses', year: '2022', rating: 8.4, genres: ['Thriller', 'Crime'] },
+  'tt11016042': { name: 'Ripley', year: '2024', rating: 8.1, genres: ['Crime', 'Dramma', 'Thriller'] },
+  'tt1839578': { name: 'Person of Interest', year: '2011', rating: 8.5, genres: ['Azione', 'Crime', 'Dramma'] },
+  'tt5290382': { name: 'Mindhunter', year: '2017', rating: 8.6, genres: ['Crime', 'Dramma', 'Thriller'] },
+  'tt4288182': { name: 'Atlanta', year: '2016', rating: 8.6, genres: ['Commedia', 'Dramma'] },
+  'tt2707408': { name: 'Narcos', year: '2015', rating: 8.7, genres: ['Crime', 'Dramma', 'Biografico'] },
+  'tt2442560': { name: 'Peaky Blinders', year: '2013', rating: 8.7, genres: ['Crime', 'Dramma'] },
+  'tt0118715': { name: 'Il grande Lebowski', year: '1998', rating: 8.1, genres: ['Commedia', 'Crime'] },
+  'tt1119646': { name: 'Una notte da leoni', year: '2009', rating: 7.7, genres: ['Commedia'] },
+  'tt0357413': { name: 'Anchorman - La leggenda di Ron Burgundy', year: '2004', rating: 7.1, genres: ['Commedia'] },
 };
 
 /**
@@ -903,10 +917,11 @@ export const BENCHMARK_METADATA: Record<string, { name: string; year: string; ra
 function fetchItems(type: 'movie' | 'series', ids: string[]): StremioMetaPreview[] {
   return ids.map((id) => {
     const meta = BENCHMARK_METADATA[id];
+    const cleanName = meta?.name || (type === 'movie' ? 'Film' : 'Serie TV');
     return {
       id,
       type,
-      name: meta?.name || id,
+      name: cleanName,
       poster: `https://images.metahub.space/poster/medium/${id}/img`,
       releaseInfo: meta?.year || '2024',
       imdbRating: meta?.rating ? meta.rating.toFixed(1) : '8.0',

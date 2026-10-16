@@ -8,6 +8,7 @@ import {
   Tv,
   ChevronLeft,
   ChevronRight,
+  Info,
 } from 'lucide-react';
 import { StremioMetaPreview, StremioMetaDetail, StremioStream, StremioVideo, WatchHistoryItem } from '../types/stremio';
 import { stremioService } from '../services/stremioService';
@@ -171,9 +172,9 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onSelectMedia, onPlayS
                   <div
                     key={`${h.id}-${h.videoId || i}`}
                     onClick={() => handleResumePlayback(h)}
-                    className="group relative flex-shrink-0 w-[85vw] sm:w-[calc(50%-12px)] lg:w-[calc((100%-40px)/3)] rounded-2xl overflow-hidden cursor-pointer select-none bg-[#0e0e18] border border-white/10 hover:border-amber-500/60 hover:shadow-[0_12px_32px_rgba(245,158,11,0.25)] transition-all duration-300 hover:-translate-y-1"
+                    className="group relative flex-shrink-0 w-[85vw] sm:w-[calc(50%-12px)] lg:w-[calc((100%-40px)/3)] rounded-2xl overflow-hidden cursor-pointer select-none bg-white/[0.03] backdrop-blur-xl border border-white/15 hover:border-amber-400/60 shadow-[0_8px_30px_rgba(0,0,0,0.5)] hover:shadow-[0_12px_36px_rgba(245,158,11,0.25)] transition-all duration-300 hover:-translate-y-1"
                   >
-                    <div className="relative aspect-[16/9.5] w-full overflow-hidden bg-[#0a0a12]">
+                    <div className="relative aspect-[16/9.5] w-full overflow-hidden bg-black/40">
                       <img
                         src={optimizeImageUrl(bannerImg, 'background') || bannerImg}
                         alt={h.name}
@@ -183,7 +184,7 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onSelectMedia, onPlayS
                       />
 
                       <div className="absolute inset-x-0 top-0 h-16 bg-gradient-to-b from-black/85 via-black/40 to-transparent pointer-events-none z-10" />
-                      <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-[#0e0e18] via-[#0e0e18]/80 to-transparent pointer-events-none z-10" />
+                      <div className="absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-black/80 via-black/40 to-transparent pointer-events-none z-10" />
 
                       <div className="absolute top-2.5 left-2.5 z-20 flex items-center gap-1.5 pointer-events-none">
                         <div className={`flex items-center gap-1.5 text-[10px] font-black px-2.5 py-0.5 rounded-lg liquid-glass-transparent border shadow-md backdrop-blur-xl ${
@@ -225,7 +226,8 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onSelectMedia, onPlayS
                       </div>
                     </div>
 
-                    <div className="p-3 sm:p-3.5 flex flex-col justify-between bg-[#0e0e18] relative z-20">
+                    {/* Footer Info Scheda: trasparente e integrata in liquid glass */}
+                    <div className="p-3 sm:p-3.5 flex flex-col justify-between bg-black/40 backdrop-blur-md border-t border-white/10 relative z-20">
                       <div>
                         <h4
                           className="text-sm sm:text-base font-bold text-white line-clamp-1 group-hover:text-amber-300 transition-colors"
@@ -241,19 +243,42 @@ export const LibraryView: React.FC<LibraryViewProps> = ({ onSelectMedia, onPlayS
                         )}
                       </div>
 
-                      <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 mt-2.5">
-                        <Play className="w-3 h-3 fill-amber-400 text-amber-400 flex-shrink-0" />
-                        {totalSeconds > 0 ? (
-                          <div className="flex items-center gap-1 text-[11px] sm:text-xs">
-                            <span className="text-amber-400 font-bold">{formatWatchTime(curSeconds)} visti</span>
-                            <span className="text-slate-500">•</span>
-                            <span className="text-slate-300">{formatWatchTime(remainingSeconds)} rimanenti</span>
-                          </div>
-                        ) : (
-                          <span className="text-amber-400 font-bold">
-                            {curSeconds > 0 ? `${formatWatchTime(curSeconds)} visti` : 'Riprendi riproduzione'}
-                          </span>
-                        )}
+                      <div className="flex items-center justify-between gap-2 mt-2.5">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-300 min-w-0">
+                          <Play className="w-3 h-3 fill-amber-400 text-amber-400 flex-shrink-0" />
+                          {totalSeconds > 0 ? (
+                            <div className="flex items-center gap-1 text-[11px] sm:text-xs truncate">
+                              <span className="text-amber-400 font-bold">{formatWatchTime(curSeconds)} visti</span>
+                              <span className="text-slate-500">•</span>
+                              <span className="text-slate-300">{formatWatchTime(remainingSeconds)} rim.</span>
+                            </div>
+                          ) : (
+                            <span className="text-amber-400 font-bold truncate">
+                              {curSeconds > 0 ? `${formatWatchTime(curSeconds)} visti` : 'Riprendi'}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Pulsante info trasparente liquid glass */}
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onSelectMedia({
+                              id: h.id,
+                              type: h.type || 'movie',
+                              name: h.name,
+                              poster: h.poster,
+                              background: h.background || h.banner || h.poster,
+                              genres: h.genres,
+                            });
+                          }}
+                          className="w-8.5 h-8.5 sm:w-9 sm:h-9 rounded-xl liquid-glass-transparent hover:bg-white/20 active:bg-white/30 text-white border border-white/25 hover:border-white/40 flex items-center justify-center transition-all duration-200 cursor-pointer shadow-md flex-shrink-0 active:scale-95 hover:scale-105 backdrop-blur-xl"
+                          title="Apri scheda"
+                          aria-label="Apri scheda"
+                        >
+                          <Info className="w-4 h-4 text-white stroke-[2.2]" />
+                        </button>
                       </div>
                     </div>
                   </div>

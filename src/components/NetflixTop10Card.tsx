@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Play, Star, Plus, Check } from 'lucide-react';
+import { Play, Star, Plus, Check, Film, Tv } from 'lucide-react';
 import { StremioMetaPreview } from '../types/stremio';
 import { stremioService } from '../services/stremioService';
 import { getReleaseYear } from '../utils/formatters';
@@ -91,6 +91,15 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
   const releaseYear = getReleaseYear(item.releaseInfo);
   const isMovieCategory = categoryType ? categoryType === 'movie' : item.type === 'movie';
   const isMovie = item.type === 'movie';
+
+  // Sanitize title so raw IDs (like tt0436992) or codes never leak to the UI
+  const displayName = React.useMemo(() => {
+    const raw = item.name || '';
+    if (!raw || /^tt\d+$/i.test(raw) || /^kitsu:\d+$/i.test(raw) || /^tmdb:\d+$/i.test(raw)) {
+      return isMovie ? 'Film' : 'Serie TV';
+    }
+    return raw;
+  }, [item.name, isMovie]);
 
   const effectiveGenres = item.genres;
   const genreLabel =
@@ -309,9 +318,9 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
         {/* Ambient Dark Bottom Gradient */}
         <div className="absolute inset-x-0 bottom-0 h-28 bg-gradient-to-t from-[#090912] via-[#090912]/85 to-transparent pointer-events-none z-10" />
 
-        {/* Top-Right IMDb Rating */}
+        {/* Top-Right IMDb Rating in Top 10 Cards */}
         {displayRating && (
-          <div className="absolute top-2.5 right-2.5 z-20 flex items-center gap-1 px-2.5 py-0.5 rounded-xl text-[10px] sm:text-[11px] font-black text-amber-300 bg-black/85 border border-amber-400/50 shadow-md">
+          <div className="absolute top-2.5 right-2.5 z-20 flex items-center gap-1 px-2.5 py-0.5 rounded-xl text-[10px] sm:text-[11px] font-black text-amber-300 bg-black/85 border border-amber-400/50 shadow-md pointer-events-none">
             <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
             <span className="font-black">{displayRating}</span>
           </div>
@@ -320,7 +329,7 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
         {/* Bottom Metadata Info: Clean, single display of title and year */}
         <div className="absolute inset-x-0 bottom-0 p-2.5 sm:p-3 z-20 flex flex-col justify-end pointer-events-none">
           <h4 className="text-xs sm:text-sm font-bold text-white truncate drop-shadow-md group-hover:text-red-400 transition-colors">
-            {item.name}
+            {displayName}
           </h4>
           <div className="flex items-center gap-1.5 text-[10px] text-slate-300 mt-0.5 font-medium">
             {releaseYear && <span className="font-semibold text-slate-200">{releaseYear}</span>}

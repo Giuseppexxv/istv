@@ -1,5 +1,6 @@
 import express from "express";
 import path from "path";
+import fs from "fs";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
@@ -18,7 +19,7 @@ async function startServer() {
   });
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   // Middleware for JSON
   app.use(express.json());
@@ -113,11 +114,37 @@ async function startServer() {
         controller.abort();
       });
 
-      const response = await fetch(targetUrl, {
-        method: req.method === "HEAD" ? "HEAD" : "GET",
-        headers,
-        signal: controller.signal,
-      });
+      // Resilient fetch with automatic retry for busy upstream video servers (e.g. evening peak traffic)
+      async function fetchWithRetry(url: string, attemptsLeft = 2, delayMs = 600): Promise<Response> {
+        try {
+          const timeoutSignal = AbortSignal.timeout(18000); // 18s per attempt
+          const combinedSignal = AbortSignal.any
+            ? AbortSignal.any([controller.signal, timeoutSignal])
+            : controller.signal;
+
+          const resp = await fetch(url, {
+            method: req.method === "HEAD" ? "HEAD" : "GET",
+            headers,
+            signal: combinedSignal,
+          });
+
+          // Upstream busy status codes (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout, 429 Too Many Requests)
+          if ((resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status === 429) && attemptsLeft > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            return fetchWithRetry(url, attemptsLeft - 1, delayMs * 1.5);
+          }
+          return resp;
+        } catch (fetchErr: any) {
+          if (controller.signal.aborted) throw fetchErr;
+          if (attemptsLeft > 0) {
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            return fetchWithRetry(url, attemptsLeft - 1, delayMs * 1.5);
+          }
+          throw fetchErr;
+        }
+      }
+
+      const response = await fetchWithRetry(targetUrl);
 
       // Set permissive CORS headers for HTML5 video & Hls.js
       res.setHeader("Access-Control-Allow-Origin", "*");
@@ -1647,15 +1674,29 @@ async function startServer() {
         effectiveSubPath = `/stream/series/${targetId}:1:1.json`;
       }
 
-      // 1. Query Official Primary ToastFlix (extended 20s timeout)
-      let toastResponse = await fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 20000);
+      // Query ToastFlix endpoints concurrently with priority to return the best streams as fast as possible
+      const [primaryRes, fallbackRes] = await Promise.allSettled([
+        fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 35000),
+        fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 35000),
+      ]);
 
-      // 2. Fallback to standard ToastFlix if primary timed out or returned no streams
-      if (!toastResponse || !Array.isArray(toastResponse.streams) || toastResponse.streams.length === 0) {
-        toastResponse = await fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 20000);
+      let combinedRawStreams: any[] = [];
+      if (primaryRes.status === "fulfilled" && primaryRes.value && Array.isArray(primaryRes.value.streams)) {
+        combinedRawStreams.push(...primaryRes.value.streams);
+      }
+      if (fallbackRes.status === "fulfilled" && fallbackRes.value && Array.isArray(fallbackRes.value.streams)) {
+        combinedRawStreams.push(...fallbackRes.value.streams);
       }
 
-      const rawStreams: any[] = Array.isArray(toastResponse?.streams) ? toastResponse.streams : [];
+      // Deduplicate streams by URL
+      const seenUrls = new Set<string>();
+      const rawStreams: any[] = [];
+      for (const st of combinedRawStreams) {
+        if (st && st.url && !seenUrls.has(st.url)) {
+          seenUrls.add(st.url);
+          rawStreams.push(st);
+        }
+      }
       const processedStreams: any[] = [];
 
       for (const s of rawStreams) {
@@ -1788,9 +1829,17 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     // Production static serving
-    const distPath = path.join(process.cwd(), "dist");
+    const candidateDirs = [
+      path.join(process.cwd(), "dist"),
+      path.join(__dirname, "dist"),
+      path.join(__dirname),
+      process.cwd(),
+    ];
+    const distPath = candidateDirs.find((d) => fs.existsSync(path.join(d, "index.html"))) || path.join(process.cwd(), "dist");
+
     app.use(express.static(distPath));
-    app.get("*", (_req, res) => {
+    app.get("*", (req, res, next) => {
+      if (req.path.startsWith("/api/")) return next();
       res.sendFile(path.join(distPath, "index.html"));
     });
   }

@@ -1011,10 +1011,10 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
                   <button
                     onClick={() => onSelectMedia(currentHero)}
                     className="flex items-center gap-2 px-3.5 sm:px-5 py-3 sm:py-3.5 rounded-2xl liquid-glass-transparent hover:bg-white/20 text-slate-200 hover:text-white font-semibold text-xs sm:text-sm transition-all duration-200 active:scale-95 cursor-pointer border border-white/25 shadow-lg whitespace-nowrap flex-shrink-0"
-                    title="Scheda & Trama"
+                    title="Scheda"
                   >
                     <Info className="w-4 h-4 text-rose-300" />
-                    <span className="hidden landscape:inline sm:inline">Scheda & Trama</span>
+                    <span className="hidden landscape:inline sm:inline">Scheda</span>
                   </button>
                 </div>
               </div>

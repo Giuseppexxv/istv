@@ -151,30 +151,86 @@ export function isAlreadyReleased(
 }
 
 /**
- * Ranks items by fame, popularity, and rating.
- * If a search query is provided, prioritizing exact/prefix matches and acclaimed titles.
+ * Normalizes strings for robust fuzzy search matching:
+ * lowercase, removes accents/diacritics, strips punctuation, collapses whitespace.
+ */
+function normalizeSearchText(str: string): string {
+  return (str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Calculates a search relevance match score between a candidate title and a search query.
+ * Perfect exact match = 1000
+ * Exact title with subtitle/colon = 850
+ * Prefix match = 800
+ * Substring match = 600
+ * All query words contained = 500
+ * Partial words = proportional
+ */
+export function calculateSearchRelevance(title: string, query: string): number {
+  const normTitle = normalizeSearchText(title);
+  const normQ = normalizeSearchText(query);
+  if (!normTitle || !normQ) return 0;
+
+  // 1. Exact match (case & accent insensitive)
+  if (normTitle === normQ) return 1000;
+
+  // 2. Exact match at the start followed by space or punctuation (e.g. "Band of Brothers - ...", "Band of Brothers:")
+  if (normTitle.startsWith(`${normQ} `) || normTitle.startsWith(`${normQ}:`)) return 880;
+
+  // 3. Simple prefix match
+  if (normTitle.startsWith(normQ)) return 800;
+
+  // 4. Exact substring match
+  if (normTitle.includes(normQ)) return 600;
+
+  // 5. Word-level matching
+  const qWords = normQ.split(' ').filter(Boolean);
+  const tWords = normTitle.split(' ').filter(Boolean);
+  if (qWords.length > 0) {
+    const allWordsPresent = qWords.every((w) =>
+      tWords.some((tw) => tw === w || tw.startsWith(w))
+    );
+    if (allWordsPresent) return 500;
+
+    const matchedCount = qWords.filter((w) =>
+      tWords.some((tw) => tw.includes(w))
+    ).length;
+    if (matchedCount > 0) {
+      return Math.round((matchedCount / qWords.length) * 350);
+    }
+  }
+
+  return 0;
+}
+
+/**
+ * Ranks items by fame, popularity, and relevance.
+ * When a search query is provided, semantic relevance strictly takes precedence
+ * over random secondary titles, placing the exact matching movie or series at rank #1.
  */
 export function rankFamousItems(
   items: StremioMetaPreview[],
   query?: string
 ): StremioMetaPreview[] {
   if (!Array.isArray(items)) return [];
-  const q = query ? query.toLowerCase().trim() : '';
+  const q = query ? query.trim() : '';
 
   return [...items].sort((a, b) => {
-    // 1. Match relevance if searching
+    // 1. High-precision query relevance if searching
     if (q) {
-      const aName = (a.name || '').toLowerCase();
-      const bName = (b.name || '').toLowerCase();
-      const aExact = aName === q;
-      const bExact = bName === q;
-      if (aExact && !bExact) return -1;
-      if (bExact && !aExact) return 1;
+      const scoreA = calculateSearchRelevance(a.name || '', q);
+      const scoreB = calculateSearchRelevance(b.name || '', q);
 
-      const aStarts = aName.startsWith(q);
-      const bStarts = bName.startsWith(q);
-      if (aStarts && !bStarts) return -1;
-      if (bStarts && !aStarts) return 1;
+      if (scoreA !== scoreB) {
+        return scoreB - scoreA;
+      }
     }
 
     // 2. High rating score (famous recognized cinema / TV)
@@ -199,16 +255,17 @@ export function rankFamousItems(
 
 /**
  * Filters any list of Stremio items ensuring only already released titles
- * (or released today) and non-junk titles are kept, sorted by fame/quality.
+ * (or released today) and non-junk titles are kept, sorted by fame/quality or search relevance.
  */
 export function filterReleasedItems(
   items: StremioMetaPreview[],
   maxCount?: number,
-  referenceDate: Date = new Date()
+  referenceDate: Date = new Date(),
+  query?: string
 ): StremioMetaPreview[] {
   if (!Array.isArray(items)) return [];
   const valid = items.filter((it) => isAlreadyReleased(it, referenceDate));
-  const ranked = rankFamousItems(valid);
+  const ranked = rankFamousItems(valid, query);
   return typeof maxCount === 'number' && maxCount > 0 ? ranked.slice(0, maxCount) : ranked;
 }
 

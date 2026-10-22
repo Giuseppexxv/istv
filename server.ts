@@ -1,4 +1,5 @@
 import express from "express";
+import { createToastFlixClient, TOASTFLIX_BASE } from "./toastflix";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
@@ -110,26 +111,26 @@ async function startServer() {
       }
 
       const controller = new AbortController();
-      req.on("close", () => {
+      res.on("close", () => {
         controller.abort();
       });
 
       // Resilient fetch with automatic retry for busy upstream video servers (e.g. evening peak traffic)
       async function fetchWithRetry(url: string, attemptsLeft = 2, delayMs = 600): Promise<Response> {
         try {
-          const timeoutSignal = AbortSignal.timeout(18000); // 18s per attempt
-          const combinedSignal = AbortSignal.any
-            ? AbortSignal.any([controller.signal, timeoutSignal])
-            : controller.signal;
-
-          const resp = await fetch(url, {
-            method: req.method === "HEAD" ? "HEAD" : "GET",
-            headers,
-            signal: combinedSignal,
-          });
+          const headerTimeout = setTimeout(() => controller.abort(), 18000);
+          let resp: Response;
+          try {
+            resp = await fetch(url, {
+              method: req.method === "HEAD" ? "HEAD" : "GET",
+              headers,
+              signal: controller.signal,
+            });
+          } finally { clearTimeout(headerTimeout); }
 
           // Upstream busy status codes (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout, 429 Too Many Requests)
           if ((resp.status === 502 || resp.status === 503 || resp.status === 504 || resp.status === 429) && attemptsLeft > 0) {
+            await resp.body?.cancel();
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             return fetchWithRetry(url, attemptsLeft - 1, delayMs * 1.5);
           }
@@ -177,6 +178,7 @@ async function startServer() {
 
           // Keep headers param string for nested requests
           const headersParam = req.query.headers ? `&headers=${encodeURIComponent(req.query.headers as string)}` : "";
+          const originParam = headers["Origin"] ? `&origin=${encodeURIComponent(headers["Origin"])}` : "";
           const refererParam = headers["Referer"] ? `&referer=${encodeURIComponent(headers["Referer"])}` : "";
 
           const rewritten = text
@@ -189,8 +191,8 @@ async function startServer() {
               if (lineTrimmed.startsWith("#") && lineTrimmed.includes('URI="')) {
                 return lineTrimmed.replace(/URI="([^"]+)"/g, (_match, uri) => {
                   try {
-                    const resolved = new URL(uri, targetUrl).href;
-                    return `URI="/api/stream-proxy?url=${encodeURIComponent(resolved)}${headersParam}${refererParam}"`;
+                    const resolved = new URL(uri, response.url || targetUrl).href;
+                    return `URI="/api/stream-proxy?url=${encodeURIComponent(resolved)}${headersParam}${refererParam}${originParam}"`;
                   } catch {
                     return `URI="${uri}"`;
                   }
@@ -200,8 +202,8 @@ async function startServer() {
               // Handle playlist / segment URI lines (don't start with #)
               if (!lineTrimmed.startsWith("#")) {
                 try {
-                  const resolved = new URL(lineTrimmed, targetUrl).href;
-                  return `/api/stream-proxy?url=${encodeURIComponent(resolved)}${headersParam}${refererParam}`;
+                  const resolved = new URL(lineTrimmed, response.url || targetUrl).href;
+                  return `/api/stream-proxy?url=${encodeURIComponent(resolved)}${headersParam}${refererParam}${originParam}`;
                 } catch {
                   return line;
                 }
@@ -245,12 +247,20 @@ async function startServer() {
       if (response.body && !response.bodyUsed) {
         const { Readable } = await import("node:stream");
         const nodeStream = Readable.fromWeb(response.body as any);
+        nodeStream.on("error", (error) => {
+          controller.abort();
+          res.destroy(error);
+        });
         nodeStream.pipe(res);
       } else {
         res.end();
       }
     } catch (err: any) {
       if (err.name === "AbortError") {
+        if (!res.destroyed) {
+          if (!res.headersSent) res.status(504).json({ error: "Upstream response timed out" });
+          else res.destroy();
+        }
         return;
       }
       console.warn(`[Stream Proxy Error] for ${targetUrl}:`, err.message);
@@ -1197,9 +1207,6 @@ async function startServer() {
     for (const [k, v] of topStreamingMemoryCache.entries()) {
       if (v.expires < now) topStreamingMemoryCache.delete(k);
     }
-    for (const [k, v] of streamMemoryCache.entries()) {
-      if (v.expires < now) streamMemoryCache.delete(k);
-    }
     for (const [k, v] of trailerCache.entries()) {
       if (v.expires < now) trailerCache.delete(k);
     }
@@ -1524,232 +1531,29 @@ async function startServer() {
     }
   });
 
-  // ==========================================
-  // TOASTFLIX EXCLUSIVE ITALIAN STREAM ENGINE
-  // Primary Source: https://toastflix.stremio-italia.eu/eyJtdWx0aUxhbmdNb2RlIjp0cnVlfQ
-  // Fast Fallback:  https://toastflix.stremio-italia.eu
-  // ==========================================
-  const TOASTFLIX_PRIMARY = "https://toastflix.stremio-italia.eu/eyJtdWx0aUxhbmdNb2RlIjp0cnVlfQ";
-  const TOASTFLIX_FALLBACK = "https://toastflix.stremio-italia.eu";
-  const streamMemoryCache = new Map<string, { body: string; expires: number }>();
-
-  // Helper to query ToastFlix endpoints with custom timeout
-  async function fetchFromToastFlix(baseUrl: string, subPath: string, timeoutMs: number): Promise<any | null> {
+  // Italian direct streams, with a shared bounded cache and one request per title.
+  const requestToastFlix = createToastFlixClient();
+  app.use('/api/addon/stream', async (req, res) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cache-Control', 'no-store');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    if (req.method !== 'GET' && req.method !== 'HEAD') return res.sendStatus(405);
+    const resource = req.path;
+    if (resource !== '/manifest.json' && !/^\/stream\/(movie|series)\/[^/?#]+\.json$/.test(resource)) {
+      return res.status(400).json({ error: 'Invalid stream resource' });
+    }
     try {
-      const targetUrl = `${baseUrl}${subPath}`;
-      const resp = await fetch(targetUrl, {
-        method: "GET",
-        headers: {
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Stremio/4.4.168",
-          Accept: "application/json, text/plain, */*",
-          "Accept-Language": "it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7",
-        },
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      if (resp.ok) {
-        return await resp.json();
+      const data = await requestToastFlix(resource);
+      if (resource === '/manifest.json') {
+        return res.json({ ...data, id: 'toastflix.addon.it', name: 'ToastFlix 🥪',
+          description: 'Flussi diretti in italiano, con preferenza 1080p HLS.',
+          logo: data.logo || TOASTFLIX_BASE + '/toast-stream-logo.png',
+          catalogs: [], resources: ['stream'] });
       }
-    } catch {
-      // Upstream timeout or connection error handled by fallback
-    }
-    return null;
-  }
-
-  // Score function to classify and prioritize direct 1080p FHD HLS streams at position 0
-  function scoreToastFlixStream(s: any): number {
-    let score = 0;
-    const name = (s.name || "").toLowerCase();
-    const title = (s.title || "").toLowerCase();
-    const rawUrl = (s.url || "").toLowerCase();
-
-    // 1. Direct playable URL
-    if (s.url && s.url.trim().length > 0) {
-      score += 2500;
-    }
-
-    // 2. Direct HLS Stream (.m3u8 playlist or clone manifest)
-    const isHls =
-      rawUrl.includes(".m3u8") ||
-      rawUrl.includes("manifest") ||
-      name.includes("hls") ||
-      title.includes("hls");
-    if (isHls) {
-      score += 2000;
-    }
-
-    // 3. 1080p / FHD Resolution (Top Priority)
-    const is1080p =
-      name.includes("fhd") ||
-      title.includes("fhd") ||
-      name.includes("1080p") ||
-      title.includes("1080p") ||
-      name.includes("1080") ||
-      title.includes("1080");
-    if (is1080p) {
-      score += 1500;
-    } else if (name.includes("4k") || title.includes("4k") || name.includes("2160p")) {
-      score += 1000;
-    } else if (name.includes("720p") || title.includes("720p") || name.includes("hd")) {
-      score += 600;
-    }
-
-    // 4. Italian Language Audio / Flag
-    const isIta =
-      title.includes("🇮🇹") ||
-      name.includes("🇮🇹") ||
-      title.includes("ita") ||
-      name.includes("ita") ||
-      title.includes("italiano") ||
-      name.includes("italiano");
-    if (isIta) {
-      score += 1200;
-    }
-
-    // 5. ToastFlix Direct Fast Badges
-    if (name.includes("🚀") || name.includes("🎯")) {
-      score += 400;
-    }
-
-    return score;
-  }
-
-  // Dedicated ToastFlix Addon Route with Primary + Fast Fallback & Automatic Proxying
-  app.use("/api/addon/stream", async (req, res) => {
-    try {
-      let subPath = req.url;
-      if (!subPath.startsWith("/")) subPath = `/${subPath}`;
-
-      res.setHeader("Access-Control-Allow-Origin", "*");
-      res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-      res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-      res.setHeader("Content-Type", "application/json");
-
-      if (req.method === "OPTIONS") {
-        return res.sendStatus(200);
-      }
-
-      // Manifest request: Query ToastFlix primary manifest with fast fallback
-      if (subPath === "/manifest.json" || subPath.startsWith("/manifest.json")) {
-        let manifestData = await fetchFromToastFlix(TOASTFLIX_PRIMARY, "/manifest.json", 4000);
-        if (!manifestData) {
-          manifestData = await fetchFromToastFlix(TOASTFLIX_FALLBACK, "/manifest.json", 3000);
-        }
-
-        const officialManifest = {
-          id: "toastflix.addon.it",
-          version: manifestData?.version || "3.0.1",
-          name: "ToastFlix 🥪 (Ufficiale)",
-          description: "Sorgente primaria ufficiale per flussi video streaming in lingua italiana 1080p FHD HLS.",
-          logo: manifestData?.logo || "https://toastflix.stremio-italia.eu/toast-stream-logo.png",
-          types: manifestData?.types || ["movie", "series"],
-          catalogs: [],
-          resources: ["stream"],
-          idPrefixes: manifestData?.idPrefixes || ["tt", "kitsu", "tmdb"],
-        };
-
-        return res.json(officialManifest);
-      }
-
-      // Check in-memory cache for stream requests
-      const cacheKey = `toast_${subPath}`;
-      const cached = streamMemoryCache.get(cacheKey);
-      const now = Date.now();
-      if (cached && cached.expires > now) {
-        res.setHeader("X-Cache", "HIT");
-        return res.send(cached.body);
-      }
-
-      // Parse stream target type and id
-      const streamMatch = subPath.match(/^\/stream\/([^/]+)\/([^.]+)\.json$/);
-      let targetType = "";
-      let targetId = "";
-      if (streamMatch) {
-        targetType = streamMatch[1];
-        targetId = streamMatch[2];
-      }
-
-      let effectiveSubPath = subPath;
-      if (targetType === "series" && targetId && !targetId.includes(":")) {
-        effectiveSubPath = `/stream/series/${targetId}:1:1.json`;
-      }
-
-      // Query ToastFlix endpoints concurrently with priority to return the best streams as fast as possible
-      const [primaryRes, fallbackRes] = await Promise.allSettled([
-        fetchFromToastFlix(TOASTFLIX_PRIMARY, effectiveSubPath, 35000),
-        fetchFromToastFlix(TOASTFLIX_FALLBACK, effectiveSubPath, 35000),
-      ]);
-
-      let combinedRawStreams: any[] = [];
-      if (primaryRes.status === "fulfilled" && primaryRes.value && Array.isArray(primaryRes.value.streams)) {
-        combinedRawStreams.push(...primaryRes.value.streams);
-      }
-      if (fallbackRes.status === "fulfilled" && fallbackRes.value && Array.isArray(fallbackRes.value.streams)) {
-        combinedRawStreams.push(...fallbackRes.value.streams);
-      }
-
-      // Deduplicate streams by URL
-      const seenUrls = new Set<string>();
-      const rawStreams: any[] = [];
-      for (const st of combinedRawStreams) {
-        if (st && st.url && !seenUrls.has(st.url)) {
-          seenUrls.add(st.url);
-          rawStreams.push(st);
-        }
-      }
-      const processedStreams: any[] = [];
-
-      for (const s of rawStreams) {
-        if (!s || !s.url) continue;
-        if (s.name?.includes("Trailer") || s.ytId) continue;
-
-        const proxiedStream = { ...s };
-
-        // Collect custom headers (User-Agent, Referer, Origin) from headers or behaviorHints
-        const customHeaders: Record<string, string> = {
-          ...(proxiedStream.headers || {}),
-          ...(proxiedStream.behaviorHints?.proxyHeaders?.request || {}),
-        };
-
-        // Automatic proxying: wrap stream through /api/stream-proxy so HLS chunks & headers are transparently relayed
-        if (!proxiedStream.url.startsWith("/api/stream-proxy")) {
-          let proxyUrl = `/api/stream-proxy?url=${encodeURIComponent(proxiedStream.url)}`;
-          if (Object.keys(customHeaders).length > 0) {
-            proxyUrl += `&headers=${encodeURIComponent(JSON.stringify(customHeaders))}`;
-            if (customHeaders["Referer"]) {
-              proxyUrl += `&referer=${encodeURIComponent(customHeaders["Referer"])}`;
-            }
-            if (customHeaders["Origin"]) {
-              proxyUrl += `&origin=${encodeURIComponent(customHeaders["Origin"])}`;
-            }
-          }
-          proxiedStream.url = proxyUrl;
-        }
-
-        // Clean name & branding
-        if (!proxiedStream.name) {
-          proxiedStream.name = "ToastFlix 🥪";
-        }
-
-        processedStreams.push(proxiedStream);
-      }
-
-      // Classify and sort: Direct 1080p FHD HLS streams with Italian language ranked at position 0
-      processedStreams.sort((a, b) => scoreToastFlixStream(b) - scoreToastFlixStream(a));
-
-      const responsePayload = JSON.stringify({ streams: processedStreams });
-
-      if (processedStreams.length > 0) {
-        streamMemoryCache.set(cacheKey, {
-          body: responsePayload,
-          expires: now + 30 * 60 * 1000,
-        });
-      }
-
-      res.send(responsePayload);
-    } catch (err: any) {
-      console.warn(`[ToastFlix Stream Proxy Error] for ${req.url}:`, err.message);
-      res.json({ streams: [] });
+      return res.json(data);
+    } catch (error: any) {
+      console.warn('[ToastFlix]', error.message);
+      return res.status(502).json({ error: 'ToastFlix temporarily unavailable', streams: [] });
     }
   });
 

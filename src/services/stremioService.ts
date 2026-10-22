@@ -721,7 +721,7 @@ class StremioService {
     allStreams.sort((a, b) => getStreamScore(b) - getStreamScore(a));
 
     if (allStreams.length > 0) {
-      this.streamCache.set(cacheKey, { data: allStreams, expires: now + 30 * 60 * 1000 });
+      this.streamCache.set(cacheKey, { data: allStreams, expires: Date.now() + 2 * 60 * 1000 });
     }
 
     return allStreams;

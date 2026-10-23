@@ -29,27 +29,6 @@ export function isJunkOrObscure(item: StremioMetaPreview | null | undefined): bo
 }
 
 /**
- * Known upcoming unreleased titles (announced/in-production/future premiere)
- * that must NEVER appear in catalog or carousels until they are officially released.
- */
-const KNOWN_UNRELEASED_PATTERNS: RegExp[] = [
-  /avengers\s*:\s*doomsday/i,
-  /avengers\s*doomsday/i,
-  /avengers\s*:\s*secret\s*wars/i,
-  /avengers\s*secret\s*wars/i,
-  /spider-man\s*:\s*beyond\s*the\s*spider-verse/i,
-  /the\s*batman\s*(-|:)?\s*part\s*ii\b/i,
-  /shrek\s*5\b/i,
-  /toy\s*story\s*5\b/i,
-  /frozen\s*(3\b|iii\b)/i,
-  /fast\s*x\s*(:|–|-)?\s*part\s*2\b/i,
-  /star\s*wars\s*:\s*(new\s*jedi\s*order|the\s*mandalorian\s*&\s*grogu)/i,
-  /supergirl\s*:\s*woman\s*of\s*tomorrow/i,
-  /dune\s*:\s*messiah/i,
-  /blade\s*\(202[5-9]\)/i,
-];
-
-/**
  * Determines whether a title (movie or series) has already been officially released
  * on or before the reference date (defaults to today).
  * Strictly excludes any future releases, upcoming cinema premieres, or unreleased titles.
@@ -60,13 +39,6 @@ export function isAlreadyReleased(
 ): boolean {
   if (!item) return false;
   if (isJunkOrObscure(item)) return false;
-
-  const name = item.name?.trim() || '';
-
-  // 1. Explicit check against known unreleased upcoming blockbusters (e.g. Avengers: Doomsday)
-  if (KNOWN_UNRELEASED_PATTERNS.some((p) => p.test(name))) {
-    return false;
-  }
 
   // 2. Check status flags (e.g. In Production, Post-production, Planned, Announced, Upcoming)
   const rawStatus = String((item as any).status || (item as any).release_status || '').toLowerCase();
@@ -147,6 +119,7 @@ export function isAlreadyReleased(
     }
   }
 
+  if (!rawReleased && !relInfo && !Number(item.imdbRating)) return false;
   return true;
 }
 
@@ -161,7 +134,8 @@ function normalizeSearchText(str: string): string {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim();
+    .trim()
+    .replace(/^(the|il|lo|la|gli|le|un|una|uno)\s+/, '');
 }
 
 /**

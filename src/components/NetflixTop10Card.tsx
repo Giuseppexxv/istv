@@ -4,6 +4,7 @@ import { StremioMetaPreview } from '../types/stremio';
 import { stremioService } from '../services/stremioService';
 import { getReleaseYear } from '../utils/formatters';
 import { optimizeImageUrl } from '../utils/imageOptimizer';
+import { useStreamPreload } from '../hooks/useStreamPreload';
 
 interface NetflixTop10CardProps {
   item: StremioMetaPreview;
@@ -21,6 +22,7 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
   onQuickPlay,
 }) => {
   const [fallbackLevel, setFallbackLevel] = useState(0);
+  const preload = useStreamPreload(item.type, item.id);
   const [inLibrary, setInLibrary] = useState(() => stremioService.isInLibrary(item.id));
   const [isHovered, setIsHovered] = useState(false);
 
@@ -224,8 +226,10 @@ export const NetflixTop10Card: React.FC<NetflixTop10CardProps> = React.memo(({
   return (
     <div
       className="group relative flex items-end flex-shrink-0 select-none py-2"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseEnter={() => { setIsHovered(true); preload.start(); }}
+      onMouseLeave={() => { setIsHovered(false); preload.cancel(); }}
+      onFocus={preload.start}
+      onBlur={preload.cancel}
     >
       {/* ================= MONUMENTAL METALLIC RANK NUMBER (LEFT) ================= */}
       <div

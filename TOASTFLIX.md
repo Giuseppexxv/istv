@@ -11,6 +11,29 @@ same promise. Successful stream responses expire after two minutes, empty result
 after ten seconds; failed requests are not cached. The server cache holds at most
 300 entries. A series request preserves its explicit episode ID.
 
+Playback requests use high browser priority and are scheduled before speculative
+preloads on the backend. At most one preload runs concurrently, with capacity for
+four discovery requests overall. A play click promotes a queued request for the
+same title without another upstream fetch. Queued work expires after 2.5 seconds;
+the 15-second upstream deadline starts when its slot is granted.
+
+Film cards preload after 350 ms of mouse hover or keyboard focus; leaving the card
+cancels the timer. Save-Data users do not trigger hover preloads. The browser allows
+only one speculative request at a time, at most one new request per second. Series
+preloading waits for an explicit episode ID. Discovery has its own HTTP connection
+pool, separate from proxied video segments, and repeated foreground calls in the
+same browser share their result.
+
+`X-ToastFlix-Cache` reports HIT, MISS or SHARED. `Server-Timing` separates queue,
+upstream and total request time. HTTP Priority headers are hints to the upstream
+service; they do not grant this website privileged access to ToastFlix.
+
+The initial playback warning appears after one minute from the start of the
+attempt, including stream discovery. Early failures are held until that deadline;
+automatic source changes do not restart it. Actual playback cancels it, while
+Retry and a new episode begin a new minute. Errors after playback has started
+remain immediate.
+
 Only HTTP(S) video URLs are passed to the player. Streams are ranked before proxy
 encoding; duplicate URL/header combinations and trailers are removed. Required
 playback headers are preserved through the proxy. HLS relative paths resolve
@@ -23,5 +46,7 @@ manifest was checked live. Production smoke checks also verified redirected HLS
 paths, Origin propagation and a 19-second local video transfer. Playback against
 third-party content sources has not been verified and remains source-dependent.
 
-Existing global TLS verification disabling and unrestricted generic proxy access
-remain separate security issues; this change does not resolve them.
+HTTPS certificates are verified. Public destination checks apply at URL parsing,
+redirect handling and socket DNS lookup; generic proxy traffic is rate-limited.
+Torrent metadata and torrent URLs are rejected on server and client. Movies and
+series query only this addon, and every accepted video uses the application proxy.

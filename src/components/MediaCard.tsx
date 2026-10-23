@@ -4,6 +4,7 @@ import { StremioMetaPreview } from '../types/stremio';
 import { stremioService } from '../services/stremioService';
 import { getReleaseYear } from '../utils/formatters';
 import { optimizeImageUrl } from '../utils/imageOptimizer';
+import { useStreamPreload } from '../hooks/useStreamPreload';
 
 interface MediaCardProps {
   item: StremioMetaPreview;
@@ -14,6 +15,7 @@ interface MediaCardProps {
 }
 
 export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onSelect, onQuickPlay, onRemove }) => {
+  const preload = useStreamPreload(item.type, item.id);
   const [fallbackLevel, setFallbackLevel] = useState(0);
   const [inLibrary, setInLibrary] = useState(() => stremioService.isInLibrary(item.id));
 
@@ -117,7 +119,11 @@ export const MediaCard: React.FC<MediaCardProps> = React.memo(({ item, rank, onS
     <div
       id={`media-card-${item.id}`}
       onClick={() => onSelect(item)}
+      onFocus={preload.start}
+      onBlur={preload.cancel}
+      onMouseLeave={preload.cancel}
       onMouseEnter={() => {
+        preload.start();
         const bgUrl =
           optimizeImageUrl(item.background, 'background') ||
           (item.id?.startsWith('tt') ? `https://images.metahub.space/background/medium/${item.id}/img` : null);

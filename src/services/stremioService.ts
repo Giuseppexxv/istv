@@ -1,3 +1,6 @@
+import type { StreamIntent } from '../../streamQueue';
+import { BoundedCache } from '../../cache';
+import { isHttpVideoStream, proxyVideoUrl } from '../../streamPolicy';
 import {
   InstalledAddon,
   StremioManifest,
@@ -126,9 +129,12 @@ class StremioService {
   private addons: InstalledAddon[] = [];
 
   // High-performance caches
-  private catalogCache = new Map<string, { data: StremioMetaPreview[]; expires: number }>();
-  private metaCache = new Map<string, { data: StremioMetaDetail; expires: number }>();
-  private streamCache = new Map<string, { data: StremioStream[]; expires: number }>();
+  private catalogCache = new BoundedCache<string, { data: StremioMetaPreview[]; expires: number }>();
+  private metaCache = new BoundedCache<string, { data: StremioMetaDetail; expires: number }>();
+  private streamCache = new BoundedCache<string, { data: StremioStream[]; expires: number }>();
+  private streamRequests = new Map<string, Promise<StremioStream[]>>();
+  private preloadInProgress = false;
+  private lastPreloadAt = 0;
   private libraryCache: StremioMetaPreview[] | null = null;
   private libraryIdSet: Set<string> = new Set<string>();
 
@@ -136,15 +142,6 @@ class StremioService {
     this.loadAddons();
     this.loadPersistentCatalogCache();
     this.getLibrary();
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('storage', (e) => {
-        if (e.key === LIBRARY_STORAGE_KEY) {
-          this.libraryCache = null;
-          this.getLibrary();
-        }
-      });
-    }
   }
 
   private loadPersistentCatalogCache() {
@@ -380,8 +377,8 @@ class StremioService {
       let resp: Response | null = null;
       const fetchOpts: RequestInit = {
         signal: AbortSignal.timeout(10000),
-        headers: { Priority: 'u=0, i' },
-        ...({ priority: 'high' } as any),
+        headers: { Priority: 'u=5' },
+        ...({ priority: 'low' } as any),
       };
       if (url.startsWith('/api/') || url.startsWith('http://localhost') || (typeof window !== 'undefined' && url.startsWith(window.location.origin))) {
         resp = await fetch(url, fetchOpts);
@@ -523,7 +520,7 @@ class StremioService {
       });
 
       // Sort combined movie + series search results by precision match score
-      return rankFamousItems(unique, q);
+      return filterReleasedItems(unique, undefined, undefined, q);
     } catch {
       return [];
     }
@@ -613,18 +610,44 @@ class StremioService {
     return null;
   }
 
-  // Progressive and concurrent stream fetching
+  // Share duplicate discovery calls. A play click can promote a queued server preload.
   public async fetchStreamsProgressive(
+    type: string, id: string,
+    onBatch?: (newStreams: StremioStream[], addonName: string) => void,
+    intent: StreamIntent = 'play'
+  ): Promise<StremioStream[]> {
+    const cacheKey = type + '_' + id;
+    const cached = this.streamCache.get(cacheKey);
+    if (cached?.data.length) {
+      onBatch?.(cached.data, 'ToastFlix');
+      return cached.data;
+    }
+    const requestKey = cacheKey + ':' + intent;
+    let pending = this.streamRequests.get(cacheKey + ':play') || this.streamRequests.get(requestKey);
+    if (!pending) {
+      pending = this.loadStreams(type, id, intent);
+      this.streamRequests.set(requestKey, pending);
+      const task = pending;
+      void task.finally(() => {
+        if (this.streamRequests.get(requestKey) === task) this.streamRequests.delete(requestKey);
+      }).catch(() => {});
+    }
+    const streams = await pending;
+    if (streams.length) onBatch?.(streams, 'ToastFlix');
+    return streams;
+  }
+
+  // Progressive and concurrent stream fetching
+  private async loadStreams(
     type: string,
     id: string,
-    onBatch?: (newStreams: StremioStream[], addonName: string) => void
+    intent: StreamIntent
   ): Promise<StremioStream[]> {
     const cacheKey = `${type}_${id}`;
     const cached = this.streamCache.get(cacheKey);
     const now = Date.now();
 
     if (cached && cached.expires > now && cached.data.length > 0) {
-      if (onBatch) onBatch(cached.data, 'Cached Streams');
       return cached.data;
     }
 
@@ -633,7 +656,7 @@ class StremioService {
     // Query all active addons that declare 'stream' resource
     const streamAddons = this.addons.filter(
       (a) =>
-        a.enabled &&
+        a.id === 'official.stream' && a.enabled &&
         a.manifest.resources.some((r) =>
           typeof r === 'string' ? r === 'stream' : r.name === 'stream'
         )
@@ -641,12 +664,12 @@ class StremioService {
 
     const promises = streamAddons.map(async (addon) => {
       try {
-        const url = `${addon.transportUrl}/stream/${type}/${id}.json`;
+        const url = `${addon.transportUrl}/stream/${type}/${id}.json?intent=${intent}`;
         let resp: Response | null = null;
         const fetchOpts: RequestInit = {
           signal: AbortSignal.timeout(20000),
-          headers: { Priority: 'u=0, i' },
-          ...({ priority: 'high' } as any),
+          headers: { Priority: intent === 'play' ? 'u=0' : 'u=6' },
+          priority: intent === 'play' ? 'high' : 'low',
         };
         if (url.startsWith('/api/') || (typeof window !== 'undefined' && url.startsWith(window.location.origin))) {
           resp = await fetch(url, fetchOpts);
@@ -662,14 +685,12 @@ class StremioService {
         if (resp && resp.ok) {
           const data = await resp.json();
           if (Array.isArray(data.streams) && data.streams.length > 0) {
-            const formattedStreams: StremioStream[] = data.streams.map((s: any) => ({
+            const formattedStreams: StremioStream[] = data.streams.filter(isHttpVideoStream).map((s: any) => ({
               ...s,
+              url: proxyVideoUrl(s),
               name: s.name ? `${addon.name} - ${s.name}` : addon.name,
             }));
             allStreams.push(...formattedStreams);
-            if (onBatch) {
-              onBatch(formattedStreams, addon.name);
-            }
             return formattedStreams;
           }
         }
@@ -732,7 +753,15 @@ class StremioService {
     const cacheKey = `${type}_${id}`;
     const cached = this.streamCache.get(cacheKey);
     if (cached && cached.expires > Date.now()) return;
-    this.fetchStreams(type, id).catch(() => {});
+    if (this.preloadInProgress || Date.now() - this.lastPreloadAt < 1000) return;
+    this.preloadInProgress = true;
+    this.lastPreloadAt = Date.now();
+    void this.fetchStreamsProgressive(type, id, undefined, 'preload')
+      .finally(() => { this.preloadInProgress = false; }).catch(() => {});
+  }
+
+  public invalidateStreams(type: string, id: string) {
+    this.streamCache.delete(`${type}_${id}`);
   }
 
   public async fetchStreams(type: string, id: string): Promise<StremioStream[]> {
@@ -783,7 +812,7 @@ class StremioService {
       if (raw !== null) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed;
+          return parsed.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string');
         }
       }
       return [];
@@ -830,10 +859,10 @@ class StremioService {
 
   public savePlaybackProgress(id: string, currentTime: number, duration: number, videoId?: string) {
     try {
-      if (typeof currentTime !== 'number' || isNaN(currentTime) || currentTime < 1) return;
+      if (!Number.isFinite(currentTime) || currentTime < 1) return;
       const history = this.getHistory();
       let index = videoId ? history.findIndex((h: any) => h.videoId === videoId) : -1;
-      if (index === -1) {
+      if (index === -1 && !videoId) {
         index = history.findIndex((h: any) => h.id === id);
       }
       const progress = duration > 0 ? Math.min(100, Math.round((currentTime / duration) * 100)) : 0;
@@ -856,7 +885,7 @@ class StremioService {
     try {
       const history = this.getHistory();
       let index = videoId ? history.findIndex((h: any) => h.videoId === videoId) : -1;
-      if (index === -1) {
+      if (index === -1 && !videoId) {
         index = history.findIndex((h: any) => h.id === id);
       }
       if (index !== -1) {
@@ -875,7 +904,7 @@ class StremioService {
     try {
       const history = this.getHistory();
       let item = videoId ? history.find((h: any) => h.videoId === videoId) : undefined;
-      if (!item) {
+      if (!item && !videoId) {
         item = history.find((h: any) => h.id === id);
       }
       if (item && item.subtitleUrl !== undefined) {
@@ -920,6 +949,11 @@ class StremioService {
     } catch (e) {
       console.warn(e);
     }
+  }
+
+  public invalidateLibrary() {
+    this.libraryCache = null;
+    this.libraryIdSet = new Set<string>();
   }
 
   public getLibrary(): StremioMetaPreview[] {
@@ -1040,3 +1074,12 @@ class StremioService {
 }
 
 export const stremioService = new StremioService();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key === null || event.key === LIBRARY_STORAGE_KEY) {
+      stremioService.invalidateLibrary();
+      window.dispatchEvent(new CustomEvent('stremio_library_changed'));
+    }
+  });
+}

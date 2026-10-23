@@ -1,3 +1,5 @@
+import { createPlaybackStartup } from '../utils/playbackStartup';
+import { proxyVideoUrl } from '../../streamPolicy';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Hls from 'hls.js';
 import {
@@ -120,41 +122,7 @@ function parseSubtitleContent(content: string): SubtitleCue[] {
 
 // Universal stream proxy URL builder
 function getStreamProxyUrl(targetUrl: string, streamObj: StremioStream): string {
-  if (!targetUrl || targetUrl.startsWith('blob:')) return targetUrl;
-  if (targetUrl.startsWith('/api/stream-proxy')) return targetUrl;
-
-  let customHeaders: Record<string, string> = {};
-  if (streamObj.behaviorHints?.proxyHeaders) {
-    const raw =
-      (streamObj.behaviorHints.proxyHeaders as any).request ||
-      streamObj.behaviorHints.proxyHeaders;
-    if (typeof raw === 'object' && raw !== null) {
-      customHeaders = { ...raw };
-    }
-  }
-
-  const isHls = targetUrl.includes('.m3u8') || streamObj.name?.toLowerCase().includes('hls');
-  const needsProxy =
-    isHls ||
-    Object.keys(customHeaders).length > 0 ||
-    streamObj.behaviorHints?.notWebReady ||
-    !targetUrl.startsWith(window.location.origin);
-
-  if (needsProxy) {
-    let proxied = `/api/stream-proxy?url=${encodeURIComponent(targetUrl)}`;
-    if (Object.keys(customHeaders).length > 0) {
-      proxied += `&headers=${encodeURIComponent(JSON.stringify(customHeaders))}`;
-      if (customHeaders['Referer']) {
-        proxied += `&referer=${encodeURIComponent(customHeaders['Referer'])}`;
-      }
-      if (customHeaders['Origin']) {
-        proxied += `&origin=${encodeURIComponent(customHeaders['Origin'])}`;
-      }
-    }
-    return proxied;
-  }
-
-  return targetUrl;
+  return proxyVideoUrl({ ...streamObj, url: targetUrl });
 }
 
 export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
@@ -338,16 +306,31 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     setActiveStream(null);
     setActiveVideo(target);
+    setResolutionAttempt(n => n + 1);
   }, [nextVideo, media.type, allVideos, activeVideo]);
 
   // Loading & Diagnostics
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [hasStartedPlayback, setHasStartedPlayback] = useState<boolean>(false);
   const [, setLoadingText] = useState<string>('Connessione in corso...');
+  const [resolutionAttempt, setResolutionAttempt] = useState(0);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
-  // 20s initial load watchdog timer ref
-  const startupWatchdogRef = useRef<any>(null);
+  // Initial playback watchdog timer ref.
+  const startupWatchdogRef = useRef<ReturnType<typeof createPlaybackStartup> | null>(null);
+
+  useEffect(() => {
+    setPlaybackError(null);
+    const startup = createPlaybackStartup((message) => {
+      setIsLoading(false);
+      setPlaybackError(message);
+    });
+    startupWatchdogRef.current = startup;
+    return () => {
+      startup.dispose();
+      if (startupWatchdogRef.current === startup) startupWatchdogRef.current = null;
+    };
+  }, [media.id, resolutionAttempt]);
 
   // Indicates when the player hasn't started yet and stays at zero / buffering (show rotella)
   const isWaitingToStart = isLoading || !hasStartedPlayback || (currentTime <= 0.2 && !isPlaying);
@@ -393,12 +376,15 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
 
     let isCancelled = false;
+    const subtitleController = new AbortController();
+    setActiveCues([]);
+    setCurrentSubtitleText(null);
     async function loadSubtitleContent() {
       try {
         const proxyUrl = `/api/stremio-proxy?url=${encodeURIComponent(selectedSubtitle!)}`;
-        let resp = await fetch(proxyUrl).catch(() => null);
+        let resp = await fetch(proxyUrl, { signal: AbortSignal.any([subtitleController.signal, AbortSignal.timeout(10000)]) }).catch(() => null);
         if (!resp || !resp.ok) {
-          resp = await fetch(selectedSubtitle!).catch(() => null);
+          resp = await fetch(selectedSubtitle!, { signal: AbortSignal.any([subtitleController.signal, AbortSignal.timeout(10000)]) }).catch(() => null);
         }
         if (resp && resp.ok) {
           const text = await resp.text();
@@ -414,6 +400,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     loadSubtitleContent();
     return () => {
       isCancelled = true;
+      subtitleController.abort();
     };
   }, [selectedSubtitle]);
 
@@ -517,9 +504,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
       setLoadingText('Connessione in corso...');
       setPlaybackError(null);
 
-      const startTime = Date.now();
-      const MAX_WAIT_MS = 20000; // Allungato a 20 secondi come richiesto
-
       try {
         let streamTargetId = media.id;
         let resolvedVideo = activeVideo;
@@ -546,13 +530,13 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
           }
         }
 
-        // Loop di ricerca flussi ad oltranza senza timeout di 20s
+        // Bound automatic retries so unavailable titles reach a recoverable error state.
         let streams: StremioStream[] = [];
         let attempt = 0;
-        while (!isCancelled) {
+        while (!isCancelled && attempt < 2) {
           try {
             attempt++;
-            if (attempt > 3) {
+            if (attempt > 1) {
               setLoadingText('Ricerca flussi in corso...');
             }
             streams = await stremioService.fetchStreams(media.type, streamTargetId);
@@ -562,13 +546,16 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
             }
           } catch {}
 
-          // Attendi prima del prossimo tentativo ad oltranza
-          await new Promise((r) => setTimeout(r, 2500));
+          if (attempt < 2 && !isCancelled) await new Promise((r) => setTimeout(r, 2500));
         }
 
         if (isCancelled) return;
         setAvailableStreams(streams || []);
 
+        if (!streams.length) {
+          startupWatchdogRef.current?.reportFailure('Nessun flusso disponibile dopo un minuto. Riprova tra poco o scegli un altro titolo.');
+          return;
+        }
         if (streams && streams.length > 0) {
           const directStream = streams.find((s) => s.url && s.url.length > 0);
           const chosen = directStream || streams[0];
@@ -576,7 +563,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         }
       } catch (err: any) {
         if (isCancelled) return;
-        // Non bloccare con avvisi: ritenta silenziosamente
+        startupWatchdogRef.current?.reportFailure('Impossibile trovare un flusso dopo un minuto. Riprova tra poco.');
       }
     }
 
@@ -586,30 +573,24 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
       // Pre-fetch all available streams for this media so user can switch anytime in settings
       const targetId = activeVideo?.id || media.id;
       stremioService.fetchStreams(media.type, targetId).then((st) => {
-        if (st && st.length > 0) setAvailableStreams(st);
+        if (!isCancelled && st && st.length > 0) setAvailableStreams(st);
       }).catch(() => {});
     }
 
     return () => {
       isCancelled = true;
     };
-  }, [media, activeVideo, activeStream]);
+  }, [media, activeVideo, activeStream, resolutionAttempt]);
 
   // Mount Stream (Direct HLS / MP4 or Extractor)
   useEffect(() => {
     if (!activeStream) return;
+    let disposed = false;
 
     setIsLoading(true);
     setHasStartedPlayback(false);
-    setPlaybackError(null);
     setAudioTracks([]);
     setQualityLevels([]);
-
-    // Nessun avviso di timeout o blocco dopo 20s: continua la riproduzione ad oltranza
-    if (startupWatchdogRef.current) {
-      clearTimeout(startupWatchdogRef.current);
-      startupWatchdogRef.current = null;
-    }
 
     // Save to watch history with full metadata and preserved subtitle settings
     hasResumedRef.current = false;
@@ -632,6 +613,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     // Fetch subtitles and restore preference if present
     const streamTargetId = activeVideo?.id || media.id;
     stremioService.fetchSubtitles(media.type, streamTargetId).then((subs) => {
+      if (disposed) return;
       setSubtitles(subs);
       const savedSub = stremioService.getSavedSubtitlePreference(media.id, activeVideo?.id);
       if (savedSub && savedSub.url !== undefined) {
@@ -833,10 +815,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
     }
 
     return () => {
-      if (startupWatchdogRef.current) {
-        clearTimeout(startupWatchdogRef.current);
-        startupWatchdogRef.current = null;
-      }
+      disposed = true;
       if (!isTransitioningRef.current && videoRef.current && videoRef.current.currentTime > 5) {
         stremioService.savePlaybackProgress(
           media.id,
@@ -1342,10 +1321,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (videoRef.current && videoRef.current.currentTime > 0.1) {
                   setHasStartedPlayback(true);
                 }
-                if (startupWatchdogRef.current) {
-                  clearTimeout(startupWatchdogRef.current);
-                  startupWatchdogRef.current = null;
-                }
+                startupWatchdogRef.current?.complete();
                 resetControlsTimeout();
               }}
               onLoadedMetadata={() => {
@@ -1371,13 +1347,10 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                   setCurrentTime(cur);
                   setDuration(dur);
 
-                  if (cur > 0.2) {
+                  if (cur > 0.2 && !videoRef.current.paused && videoRef.current.readyState >= 3) {
                     setHasStartedPlayback(true);
                     setIsLoading(false);
-                    if (startupWatchdogRef.current) {
-                      clearTimeout(startupWatchdogRef.current);
-                      startupWatchdogRef.current = null;
-                    }
+                    startupWatchdogRef.current?.complete();
                   }
 
                   // Reliable auto-advance to next episode ONLY when actively playing and reached end
@@ -1411,13 +1384,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
               onCanPlay={() => {
                 setIsLoading(false);
                 setPlaybackError(null);
-                if (videoRef.current && videoRef.current.currentTime > 0.1) {
-                  setHasStartedPlayback(true);
-                  if (startupWatchdogRef.current) {
-                    clearTimeout(startupWatchdogRef.current);
-                    startupWatchdogRef.current = null;
-                  }
-                }
                 if (!hasResumedRef.current) {
                   checkAndApplyResume();
                 }
@@ -1426,15 +1392,14 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (isClosingRef.current || isTransitioningRef.current || !videoRef.current?.src) {
                   return;
                 }
-                // Se siamo ancora nei 20 secondi iniziali di avvio, ritenta senza dare subito errore
-                if (startupWatchdogRef.current) {
+                // Keep the one-minute startup window before showing an initial playback warning.
+                if (startupWatchdogRef.current?.waiting) {
                   try {
                     videoRef.current?.load();
                   } catch {}
                   return;
                 }
-                setIsLoading(false);
-                setPlaybackError(
+                startupWatchdogRef.current?.reportFailure(
                   'Impossibile riprodurre il flusso. Il server sorgente potrebbe essere temporaneamente occupato.'
                 );
               }}
@@ -1488,6 +1453,8 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
             </div>
 
             <div className="flex items-center justify-center gap-2 pt-2">
+              <button type="button" onClick={() => { stremioService.invalidateStreams(media.type, activeVideo?.id || media.id); setPlaybackError(null); setActiveStream(null); setResolutionAttempt(n => n + 1); }}
+                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold">Riprova</button>
               <button
                 type="button"
                 onClick={handleFastClose}

@@ -77,7 +77,7 @@ export const liveTvService = {
         ? `/api/live-channels?network=${encodeURIComponent(network)}`
         : '/api/live-channels';
 
-      const response = await fetch(url);
+      const response = await fetch(url, { signal: AbortSignal.timeout(20000) });
       if (!response.ok) {
         throw new Error(`Server returned ${response.status}`);
       }

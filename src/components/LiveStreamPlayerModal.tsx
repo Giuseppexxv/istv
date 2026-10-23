@@ -110,14 +110,16 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
   // 1. Resolve Direct HLS Stream on mount or channel/reload change
   useEffect(() => {
     let isCancelled = false;
+    const controller = new AbortController();
+    setNativeStreamUrl(null);
     setIsLoadingStream(true);
     setStreamError(null);
     setUseFallbackProxy(false);
 
     const fetchDirectStream = async () => {
       try {
-        const resp = await fetch(`/api/live-stream?id=${channel.id}&refresh=${playerKey > 0 ? '1' : '0'}`, {
-          signal: AbortSignal.timeout(20000),
+        const resp = await fetch(`/api/live-stream?id=${encodeURIComponent(channel.id)}&refresh=${playerKey > 0 ? '1' : '0'}`, {
+          signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]),
         });
 
         if (!resp.ok) {
@@ -146,6 +148,7 @@ export const LiveStreamPlayerModal: React.FC<LiveStreamPlayerModalProps> = ({
 
     return () => {
       isCancelled = true;
+      controller.abort();
     };
   }, [channel.id, playerKey]);
 

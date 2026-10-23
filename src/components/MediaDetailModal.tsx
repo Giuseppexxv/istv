@@ -131,6 +131,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   // High-precision Instant YouTube trailer resolver with in-memory cache
   useEffect(() => {
     if (!item) return;
+    let cancelled = false;
+    const controller = new AbortController();
+    setFetchedTrailerKey(null);
 
     const extractYoutubeKey = (val?: any): string | null => {
       if (!val) return null;
@@ -153,9 +156,10 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       setTrailerLoading(false);
     } else {
       setTrailerLoading(true);
-      fetch(`/api/youtube-trailer?title=${encodeURIComponent(item.name)}&type=${item.type}&imdbId=${item.id}`)
+      fetch(`/api/youtube-trailer?title=${encodeURIComponent(item.name)}&type=${item.type}&imdbId=${encodeURIComponent(item.id)}`, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]) })
         .then((res) => res.json())
         .then((data) => {
+          if (cancelled) return;
           if (data.success && data.videoId) {
             setFetchedTrailerKey(data.videoId);
             trailerClientCache.set(item.id, data.videoId);
@@ -163,8 +167,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
           }
           setTrailerLoading(false);
         })
-        .catch(() => setTrailerLoading(false));
+        .catch(() => { if (!cancelled) setTrailerLoading(false); });
     }
+    return () => { cancelled = true; controller.abort(); };
   }, [item?.id, item?.name, item?.type, detail?.trailers, (detail as any)?.trailer]);
 
   // Throttle scroll handling with requestAnimationFrame and step thresholding to prevent continuous re-renders
@@ -224,6 +229,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   useEffect(() => {
     if (!item?.id) return;
 
+    let cancelled = false;
     // Reset scroll & states on item change
     setIsScrolled(false);
     setTrailerActive(false);
@@ -271,7 +277,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     stremioService
       .fetchMeta(item.type, item.id)
       .then((meta) => {
-        if (!meta) return;
+        if (cancelled || !meta) return;
         setDetail((prev) => {
           if (!prev) return meta;
 
@@ -310,6 +316,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       .catch((err) => {
         console.warn('Meta background enrich failed', err);
       });
+    return () => { cancelled = true; };
   }, [item?.id]);
 
   if (!item) return null;
@@ -371,28 +378,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     .map(Number)
     .sort((a, b) => a - b);
 
-  // Ratings calculation & multi-source synthesis
-  const imdbVal =
-    typeof detail?.imdbRating === 'number'
-      ? detail.imdbRating
-      : parseFloat(String(detail?.imdbRating || '7.8')) || 7.8;
-
-  const imdbScore = Math.min(10, Math.max(1, imdbVal)).toFixed(1);
-  const rottenTomatoes = Math.min(99, Math.max(65, Math.round(imdbVal * 10 + 4)));
-  const audienceScore = Math.min(98, Math.max(68, Math.round(imdbVal * 9.8 + 5)));
-  const metacriticScore = Math.min(96, Math.max(60, Math.round(imdbVal * 10 - 2)));
-  const letterboxdScore = (imdbVal / 2).toFixed(1);
-
-  // Composite weighted average calculated across all verified platforms
-  const compositeScoreNum =
-    (imdbVal +
-      rottenTomatoes / 10 +
-      audienceScore / 10 +
-      metacriticScore / 10 +
-      parseFloat(letterboxdScore) * 2) /
-    5;
-  const globalAverageScore = compositeScoreNum.toFixed(1);
-  const globalPercentage = Math.round(compositeScoreNum * 10);
+  // Show only the rating supplied by the catalog. Never fabricate other sources.
+  const rating = Number(detail?.imdbRating || item.imdbRating);
+  const imdbScore = Number.isFinite(rating) && rating > 0 && rating <= 10 ? rating.toFixed(1) : '—';
 
   // Determine reliable trailer URL
   const effectiveTrailerKey =
@@ -530,7 +518,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             <div className="hidden sm:flex items-center gap-2 flex-shrink-0">
               <span className="flex items-center gap-1 text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-0.5 rounded-full border border-amber-500/35">
                 <Star className="w-3 h-3 fill-amber-400" />
-                {globalAverageScore}/10
+                {imdbScore}/10
               </span>
               {releaseYear && (
                 <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-white/10 text-slate-300 border border-white/15">
@@ -668,10 +656,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   {/* Media / Voto */}
                   <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[11px] font-bold shadow-md backdrop-blur-md">
                     <Star className="w-3 h-3 fill-amber-400" />
-                    <span>Media: {globalAverageScore}/10</span>
-                    <span className="text-amber-200/75 font-normal text-[10px]">
-                      ({globalPercentage}%)
-                    </span>
+                    <span>IMDb: {imdbScore}/10</span>
                   </div>
 
                   {/* Anno */}
@@ -870,67 +855,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   </div>
                 )}
 
-                {/* 4. MEDIA VOTI E TUTTI I VOTI */}
-                <div className="p-5 sm:p-6 rounded-2xl liquid-glass-rank border border-white/25 space-y-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <Sparkles className="w-4 h-4 text-amber-400" />
-                        <span className={`text-xs font-black uppercase tracking-wider font-mono ${isSeries ? 'text-purple-300' : 'text-rose-300'}`}>
-                          Media Voti Complessiva
-                        </span>
-                      </div>
-                      <p className="text-xs text-slate-300">
-                        Media ponderata calcolata tra i punteggi di critica e spettatori
-                      </p>
-                    </div>
-
-                    {/* Global Average Rating Score Badge */}
-                    <div className="flex items-center gap-3 bg-white/10 px-4 py-2.5 rounded-2xl border border-white/15 backdrop-blur-md flex-shrink-0">
-                      <div className="text-3xl sm:text-4xl font-black text-amber-300 font-mono tracking-tight">
-                        {globalAverageScore}
-                      </div>
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-0.5 text-amber-400">
-                          {[...Array(5)].map((_, i) => (
-                            <Star
-                              key={i}
-                              className={`w-3.5 h-3.5 fill-amber-400 ${
-                                i === 4 ? 'opacity-70' : ''
-                              }`}
-                            />
-                          ))}
-                        </div>
-                        <span className="text-[10px] font-bold text-slate-300 uppercase tracking-wider block">
-                          {globalPercentage}% Indice Consenso
-                        </span>
-                      </div>
-                    </div>
+                <div className="p-5 rounded-2xl liquid-glass-rank border border-white/25 flex items-center justify-between gap-4">
+                  <div>
+                    <h4 className="text-sm font-bold text-amber-300">Voto IMDb</h4>
+                    <p className="text-xs text-slate-300">{imdbScore === '—' ? 'Voto non disponibile nel catalogo.' : 'Punteggio fornito dal catalogo collegato.'}</p>
                   </div>
-
-                  {/* Multi-Portal Comparison Breakdown Bar */}
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-white/10 text-xs">
-                    <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 text-center">
-                      <span className="text-[10px] text-amber-400 font-bold block">IMDb</span>
-                      <span className="font-black text-white text-sm">{imdbScore}/10</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 text-center">
-                      <span className="text-[10px] text-rose-400 font-bold block">Rotten Tomatoes</span>
-                      <span className="font-black text-white text-sm">{rottenTomatoes}%</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 text-center">
-                      <span className="text-[10px] text-emerald-400 font-bold block">Metacritic</span>
-                      <span className="font-black text-white text-sm">{metacriticScore}/100</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 text-center">
-                      <span className="text-[10px] text-amber-300 font-bold block">Spettatori RT</span>
-                      <span className="font-black text-white text-sm">{audienceScore}%</span>
-                    </div>
-                    <div className="p-2.5 rounded-xl bg-black/40 border border-white/10 text-center col-span-2 sm:col-span-1">
-                      <span className="text-[10px] text-rose-300 font-bold block">Letterboxd</span>
-                      <span className="font-black text-white text-sm">{letterboxdScore}/5</span>
-                    </div>
-                  </div>
+                  <span className="text-3xl font-black text-amber-300">{imdbScore}<span className="text-sm text-slate-400">/10</span></span>
                 </div>
 
                 {/* 5. DETTAGLI TECNICI & TROUPE - CLEAR HIERARCHY */}

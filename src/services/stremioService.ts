@@ -1,3 +1,5 @@
+import { BoundedCache } from '../../cache';
+import { isHttpVideoStream, proxyVideoUrl } from '../../streamPolicy';
 import {
   InstalledAddon,
   StremioManifest,
@@ -126,9 +128,9 @@ class StremioService {
   private addons: InstalledAddon[] = [];
 
   // High-performance caches
-  private catalogCache = new Map<string, { data: StremioMetaPreview[]; expires: number }>();
-  private metaCache = new Map<string, { data: StremioMetaDetail; expires: number }>();
-  private streamCache = new Map<string, { data: StremioStream[]; expires: number }>();
+  private catalogCache = new BoundedCache<string, { data: StremioMetaPreview[]; expires: number }>();
+  private metaCache = new BoundedCache<string, { data: StremioMetaDetail; expires: number }>();
+  private streamCache = new BoundedCache<string, { data: StremioStream[]; expires: number }>();
   private libraryCache: StremioMetaPreview[] | null = null;
   private libraryIdSet: Set<string> = new Set<string>();
 
@@ -136,15 +138,6 @@ class StremioService {
     this.loadAddons();
     this.loadPersistentCatalogCache();
     this.getLibrary();
-
-    if (typeof window !== 'undefined') {
-      window.addEventListener('storage', (e) => {
-        if (e.key === LIBRARY_STORAGE_KEY) {
-          this.libraryCache = null;
-          this.getLibrary();
-        }
-      });
-    }
   }
 
   private loadPersistentCatalogCache() {
@@ -523,7 +516,7 @@ class StremioService {
       });
 
       // Sort combined movie + series search results by precision match score
-      return rankFamousItems(unique, q);
+      return filterReleasedItems(unique, undefined, undefined, q);
     } catch {
       return [];
     }
@@ -633,7 +626,7 @@ class StremioService {
     // Query all active addons that declare 'stream' resource
     const streamAddons = this.addons.filter(
       (a) =>
-        a.enabled &&
+        a.id === 'official.stream' && a.enabled &&
         a.manifest.resources.some((r) =>
           typeof r === 'string' ? r === 'stream' : r.name === 'stream'
         )
@@ -662,8 +655,9 @@ class StremioService {
         if (resp && resp.ok) {
           const data = await resp.json();
           if (Array.isArray(data.streams) && data.streams.length > 0) {
-            const formattedStreams: StremioStream[] = data.streams.map((s: any) => ({
+            const formattedStreams: StremioStream[] = data.streams.filter(isHttpVideoStream).map((s: any) => ({
               ...s,
+              url: proxyVideoUrl(s),
               name: s.name ? `${addon.name} - ${s.name}` : addon.name,
             }));
             allStreams.push(...formattedStreams);
@@ -735,6 +729,10 @@ class StremioService {
     this.fetchStreams(type, id).catch(() => {});
   }
 
+  public invalidateStreams(type: string, id: string) {
+    this.streamCache.delete(`${type}_${id}`);
+  }
+
   public async fetchStreams(type: string, id: string): Promise<StremioStream[]> {
     return this.fetchStreamsProgressive(type, id);
   }
@@ -783,7 +781,7 @@ class StremioService {
       if (raw !== null) {
         const parsed = JSON.parse(raw);
         if (Array.isArray(parsed)) {
-          return parsed;
+          return parsed.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string');
         }
       }
       return [];
@@ -830,10 +828,10 @@ class StremioService {
 
   public savePlaybackProgress(id: string, currentTime: number, duration: number, videoId?: string) {
     try {
-      if (typeof currentTime !== 'number' || isNaN(currentTime) || currentTime < 1) return;
+      if (!Number.isFinite(currentTime) || currentTime < 1) return;
       const history = this.getHistory();
       let index = videoId ? history.findIndex((h: any) => h.videoId === videoId) : -1;
-      if (index === -1) {
+      if (index === -1 && !videoId) {
         index = history.findIndex((h: any) => h.id === id);
       }
       const progress = duration > 0 ? Math.min(100, Math.round((currentTime / duration) * 100)) : 0;
@@ -856,7 +854,7 @@ class StremioService {
     try {
       const history = this.getHistory();
       let index = videoId ? history.findIndex((h: any) => h.videoId === videoId) : -1;
-      if (index === -1) {
+      if (index === -1 && !videoId) {
         index = history.findIndex((h: any) => h.id === id);
       }
       if (index !== -1) {
@@ -875,7 +873,7 @@ class StremioService {
     try {
       const history = this.getHistory();
       let item = videoId ? history.find((h: any) => h.videoId === videoId) : undefined;
-      if (!item) {
+      if (!item && !videoId) {
         item = history.find((h: any) => h.id === id);
       }
       if (item && item.subtitleUrl !== undefined) {
@@ -920,6 +918,11 @@ class StremioService {
     } catch (e) {
       console.warn(e);
     }
+  }
+
+  public invalidateLibrary() {
+    this.libraryCache = null;
+    this.libraryIdSet = new Set<string>();
   }
 
   public getLibrary(): StremioMetaPreview[] {
@@ -1040,3 +1043,12 @@ class StremioService {
 }
 
 export const stremioService = new StremioService();
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key === null || event.key === LIBRARY_STORAGE_KEY) {
+      stremioService.invalidateLibrary();
+      window.dispatchEvent(new CustomEvent('stremio_library_changed'));
+    }
+  });
+}

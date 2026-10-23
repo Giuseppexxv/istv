@@ -1434,7 +1434,7 @@ export async function fetchCuratedCategories(targetType: CatalogTargetType): Pro
   try {
     const stored = localStorage.getItem(`istream_cat_${targetType}_v7`);
     const storedTime = Number(localStorage.getItem(`istream_cat_${targetType}_v7_ts`) || 0);
-    if (stored) {
+    if (stored && storedTime > 0 && Date.now() - storedTime < CACHE_TTL) {
       const parsed = JSON.parse(stored);
       if (Array.isArray(parsed) && parsed.length > 0) {
         categoriesCache[targetType] = { data: parsed, time: storedTime || Date.now() };

@@ -1,3 +1,6 @@
+import { safeFetch, readTextLimited } from './network';
+import { isHttpVideoStream } from './streamPolicy';
+
 export const TOASTFLIX_CONFIG = { soloDirect: true };
 export const TOASTFLIX_BASE = 'https://toastflix.stremio-italia.eu';
 export const TOASTFLIX_URL = `${TOASTFLIX_BASE}/${Buffer.from(JSON.stringify(TOASTFLIX_CONFIG)).toString('base64url')}`;
@@ -13,7 +16,7 @@ export function scoreStream(stream: any): number {
 export function prepareStreams(streams: any[]): any[] {
   const seen = new Set<string>();
   return streams.filter((stream) => {
-    if (!stream || typeof stream.url !== 'string' || stream.ytId || /trailer/i.test(stream.name || '')) return false;
+    if (!isHttpVideoStream(stream) || /trailer/i.test(stream.name || '')) return false;
     try {
       const url = new URL(stream.url);
       if (!['http:', 'https:'].includes(url.protocol)) return false;
@@ -27,7 +30,7 @@ export function prepareStreams(streams: any[]): any[] {
     const input = { ...stream.headers, ...stream.behaviorHints?.proxyHeaders?.request };
     for (const [key, value] of Object.entries(input)) {
       if (typeof value === 'string' && !/[\r\n]/.test(value)
-        && ['user-agent', 'referer', 'origin', 'cookie', 'authorization', 'accept', 'accept-language'].includes(key.toLowerCase())) {
+        && ['user-agent', 'referer', 'origin', 'cookie', 'authorization', 'accept', 'accept-language', 'sec-fetch-site', 'sec-fetch-mode', 'sec-fetch-dest'].includes(key.toLowerCase())) {
         headers[key] = value;
       }
     }
@@ -38,7 +41,7 @@ export function prepareStreams(streams: any[]): any[] {
 }
 
 // One upstream request per title, including concurrent clients. Short caches avoid stale signed URLs.
-export function createToastFlixClient(fetcher: typeof fetch = fetch) {
+export function createToastFlixClient(fetcher: typeof fetch = safeFetch as typeof fetch) {
   const cache = new Map<string, { expires: number; data: any }>();
   const pending = new Map<string, Promise<any>>();
   return async function request(subPath: string): Promise<any> {
@@ -55,7 +58,7 @@ export function createToastFlixClient(fetcher: typeof fetch = fetch) {
         signal: AbortSignal.timeout(15000),
       });
       if (!response.ok) throw new Error(`ToastFlix HTTP ${response.status}`);
-      const payload = await response.json();
+      const payload = JSON.parse(await readTextLimited(response));
       if (!payload || (manifest ? typeof payload.id !== 'string' : !Array.isArray(payload.streams))) {
         throw new Error('Invalid ToastFlix response');
       }

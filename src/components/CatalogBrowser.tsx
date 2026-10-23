@@ -43,6 +43,7 @@ import { LiveTvBrowser } from './LiveTvBrowser';
 import { LiveChannel } from '../services/liveTvService';
 
 interface CatalogBrowserProps {
+  active?: boolean;
   tab: 'discover' | 'movies' | 'series' | 'livetv';
   searchQuery: string;
   onSearchChange?: (val: string) => void;
@@ -209,6 +210,7 @@ const catalogCache: CatalogModuleCache = {
 })();
 
 export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
+  active = true,
   tab,
   searchQuery,
   onSelectMedia,
@@ -364,7 +366,7 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
   // Auto advance featured hero carousel every 5 seconds (zero CPU loop when tab is backgrounded)
   useEffect(() => {
     if (featuredList.length <= 1) return;
-    if (isHeroHovered) return;
+    if (isHeroHovered || !active) return;
 
     let timer: NodeJS.Timeout | null = null;
 
@@ -398,7 +400,7 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
       stopTimer();
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [featuredList.length, isHeroHovered]);
+  }, [featuredList.length, isHeroHovered, active]);
 
   // Load Primary Catalogs based on Active Tab
   useEffect(() => {
@@ -423,12 +425,14 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
       return;
     }
 
+    let cancelled = false;
     setSearching(true);
     const delayDebounce = setTimeout(() => {
       const q = searchQuery.trim();
       stremioService
         .search(q)
         .then((items) => {
+          if (cancelled) return;
           const seen = new Set<string>();
           const unique = items.filter((it) => {
             if (!it || !it.id || seen.has(it.id)) return false;
@@ -438,10 +442,10 @@ export const CatalogBrowser: React.FC<CatalogBrowserProps> = ({
           setSearchResults(unique);
           setSearching(false);
         })
-        .catch(() => setSearching(false));
+        .catch(() => { if (!cancelled) setSearching(false); });
     }, 200);
 
-    return () => clearTimeout(delayDebounce);
+    return () => { cancelled = true; clearTimeout(delayDebounce); };
   }, [searchQuery]);
 
   const loadSpecificGenre = async (type: 'movie' | 'series', genre: string) => {

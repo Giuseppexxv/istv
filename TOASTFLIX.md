@@ -23,5 +23,7 @@ manifest was checked live. Production smoke checks also verified redirected HLS
 paths, Origin propagation and a 19-second local video transfer. Playback against
 third-party content sources has not been verified and remains source-dependent.
 
-Existing global TLS verification disabling and unrestricted generic proxy access
-remain separate security issues; this change does not resolve them.
+HTTPS certificates are verified. Public destination checks apply at URL parsing,
+redirect handling and socket DNS lookup; generic proxy traffic is rate-limited.
+Torrent metadata and torrent URLs are rejected on server and client. Movies and
+series query only this addon, and every accepted video uses the application proxy.

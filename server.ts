@@ -1,29 +1,38 @@
+import "dotenv/config";
 import express from "express";
+import { safeFetch as fetch, readTextLimited, sanitizeHeaders, UnsafeTargetError } from "./network";
+import { createApiGuard } from './apiGuard';
+import { BoundedCache } from './cache';
 import { createToastFlixClient, TOASTFLIX_BASE } from "./toastflix";
 import path from "path";
 import fs from "fs";
 import { createServer as createViteServer } from "vite";
 
 async function startServer() {
-  process.on("unhandledRejection", (reason: any) => {
-    if (reason?.name === "AbortError" || reason?.code === "ABORT_ERR") {
-      return;
-    }
-    console.warn("[Unhandled Rejection caught safely]:", reason?.message || reason);
-  });
-
-  process.on("uncaughtException", (err: any) => {
-    if (err?.name === "AbortError" || err?.code === "ABORT_ERR") {
-      return;
-    }
-    console.warn("[Uncaught Exception caught safely]:", err?.message || err);
-  });
+  // Log fatal exceptions without suppressing Node's exit/restart behavior.
+  process.on('uncaughtExceptionMonitor', (error) => console.error('[Fatal server error]', error));
 
   const app = express();
+  const proxyHops = Number(process.env.TRUST_PROXY_HOPS || 0);
+  if (Number.isInteger(proxyHops) && proxyHops > 0 && proxyHops <= 5) app.set('trust proxy', proxyHops);
   const PORT = Number(process.env.PORT) || 3000;
 
   // Middleware for JSON
-  app.use(express.json());
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '32kb' }));
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+  app.use('/api', (req, res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return res.sendStatus(405);
+    if (Object.values(req.query).some(v => typeof v !== 'string' || v.length > 16384)) {
+      return res.status(400).json({ error: 'Invalid query parameters' });
+    }
+    next();
+  });
+  app.use('/api', createApiGuard());
 
   // Global High-Priority & Performance Headers for all API routes (RFC 9218 HTTP Priority standard)
   app.use("/api/*", (_req, res, next) => {
@@ -70,7 +79,7 @@ async function startServer() {
         if (parsed) {
           const reqObj = parsed.request || parsed;
           for (const [k, v] of Object.entries(reqObj)) {
-            if (typeof v === "string") headers[k] = v;
+            if (typeof v === "string") Object.assign(headers, sanitizeHeaders({ [k]: v }));
           }
         }
       } catch (e) {
@@ -79,13 +88,13 @@ async function startServer() {
     }
 
     if (req.query.referer && typeof req.query.referer === "string") {
-      headers["Referer"] = req.query.referer;
+      headers["referer"] = req.query.referer;
     }
     if (req.query.origin && typeof req.query.origin === "string") {
-      headers["Origin"] = req.query.origin;
+      headers["origin"] = req.query.origin;
     }
 
-    return headers;
+    return { ...sanitizeHeaders(headers), "accept-encoding": "identity" };
   }
 
   // API: Universal Video Stream & HLS Proxy
@@ -164,13 +173,13 @@ async function startServer() {
         res.status(response.status);
         if (contentType) res.setHeader("Content-Type", contentType);
         const cl = response.headers.get("content-length");
-        if (cl) res.setHeader("Content-Length", cl);
+        if (cl && !response.headers.has("content-encoding")) res.setHeader("Content-Length", cl);
         return res.end();
       }
 
       // If it's an HLS playlist, rewrite segment and sub-playlist URLs to point through stream-proxy
       if (isM3u8) {
-        const text = await response.text();
+        const text = await readTextLimited(response);
         const trimmed = text.trim();
         if (trimmed.includes("#EXTM3U") || trimmed.includes("#EXTINF") || trimmed.includes("#EXT-X-")) {
           res.setHeader("Content-Type", "application/vnd.apple.mpegurl; charset=utf-8");
@@ -178,8 +187,8 @@ async function startServer() {
 
           // Keep headers param string for nested requests
           const headersParam = req.query.headers ? `&headers=${encodeURIComponent(req.query.headers as string)}` : "";
-          const originParam = headers["Origin"] ? `&origin=${encodeURIComponent(headers["Origin"])}` : "";
-          const refererParam = headers["Referer"] ? `&referer=${encodeURIComponent(headers["Referer"])}` : "";
+          const originParam = headers["origin"] ? `&origin=${encodeURIComponent(headers["origin"])}` : "";
+          const refererParam = headers["referer"] ? `&referer=${encodeURIComponent(headers["referer"])}` : "";
 
           const rewritten = text
             .split("\n")
@@ -218,28 +227,30 @@ async function startServer() {
 
         // If it was tagged as m3u8 but the upstream returned non-playlist body (e.g. error text or redirect)
         // return the text payload directly without reading the already-consumed response.body stream
-        res.setHeader("Content-Type", contentType || "text/plain");
+        res.setHeader("Content-Type", "text/plain; charset=utf-8");
         return res.status(response.status).send(text);
       }
 
       // For binary media (TS segments, MP4, WebM, audio chunks), stream directly
       res.status(response.status);
-      if (
+      if (!contentType && (
         targetUrl.includes("/video/") ||
         targetUrl.includes("/audio/") ||
         targetUrl.includes(".ts") ||
         targetUrl.includes("tiktokcdn") ||
         targetUrl.includes(".image")
-      ) {
+      )) {
         res.setHeader("Content-Type", "video/mp2t");
       } else if (contentType) {
-        res.setHeader("Content-Type", contentType);
+        const mediaType = /^(video\/|audio\/|application\/(octet-stream|mp4|vnd\.apple\.mpegurl|x-mpegurl))/i.test(contentType);
+        res.setHeader('Content-Type', mediaType ? contentType : 'application/octet-stream');
+        if (!mediaType) res.setHeader('Content-Disposition', 'attachment');
       } else {
         res.setHeader("Content-Type", "video/mp4");
       }
 
       const cl = response.headers.get("content-length");
-      if (cl) res.setHeader("Content-Length", cl);
+      if (cl && !response.headers.has("content-encoding")) res.setHeader("Content-Length", cl);
 
       const cr = response.headers.get("content-range");
       if (cr) res.setHeader("Content-Range", cr);
@@ -256,6 +267,7 @@ async function startServer() {
         res.end();
       }
     } catch (err: any) {
+      if (err instanceof UnsafeTargetError) return res.status(400).json({ error: err.message });
       if (err.name === "AbortError") {
         if (!res.destroyed) {
           if (!res.headersSent) res.status(504).json({ error: "Upstream response timed out" });
@@ -283,7 +295,7 @@ async function startServer() {
       return res.status(400).send("Missing url parameter");
     }
     try {
-      const fetchUrl = target.startsWith("http") ? target : `http://logo.huhu.to/logo?c=${target}`;
+      const fetchUrl = /^https?:\/\//i.test(target) ? target : `https://logo.huhu.to/logo?c=${encodeURIComponent(target)}`;
       const logoResp = await fetch(fetchUrl, {
         headers: {
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -295,10 +307,28 @@ async function startServer() {
         return res.status(logoResp.status).send("Not found");
       }
       const ct = logoResp.headers.get("content-type") || "image/png";
+      if (!/^image\/(png|jpe?g|gif|webp|avif)(;|$)/i.test(ct)) {
+        await logoResp.body?.cancel();
+        return res.status(415).send('Unsupported logo format');
+      }
       res.setHeader("Content-Type", ct);
       res.setHeader("Cache-Control", "public, max-age=86400, immutable");
-      const buffer = await logoResp.arrayBuffer();
-      res.send(Buffer.from(buffer));
+      // Read as bytes with a strict limit, retaining binary image contents.
+      const reader = logoResp.body?.getReader();
+      const chunks = [];
+      let bytes = 0;
+      if (reader) {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > 2 * 1024 * 1024) { await reader.cancel(); return res.status(413).send('Logo too large'); }
+            chunks.push(value);
+          }
+        } finally { reader.releaseLock(); }
+      }
+      res.send(Buffer.concat(chunks));
     } catch (err: any) {
       res.status(502).send("Logo fetch failed");
     }
@@ -308,7 +338,6 @@ async function startServer() {
   // VAVOO.TO LIVE TV ENGINE (https://vavoo.to/#/channels)
   // Direct HLS live streaming with zero ads & zero popups
   // ==========================================
-  process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
   const VAVOO_BASE_SITES = ["https://vavoo.to", "https://kool.to"];
   const VAVOO_PING_URLS = [
@@ -320,7 +349,7 @@ async function startServer() {
   let vavooSignatureExpires = 0;
   let vavooChannelsCache: any[] | null = null;
   let vavooChannelsCacheExpires = 0;
-  const vavooStreamCache = new Map<string, { streamUrl: string; rawM3u8: string; expires: number }>();
+  const vavooStreamCache = new BoundedCache<string, { streamUrl: string; rawM3u8: string; expires: number }>();
 
   function getVavooPingPayload() {
     const currentTimestamp = Date.now();
@@ -662,7 +691,7 @@ async function startServer() {
     });
   }
 
-  const vavooGroupCache = new Map<string, { channels: any[]; expires: number }>();
+  const vavooGroupCache = new BoundedCache<string, { channels: any[]; expires: number }>();
 
   async function fetchVavooChannels(targetGroup = 'Italy'): Promise<any[]> {
     const now = Date.now();
@@ -1042,7 +1071,7 @@ async function startServer() {
   });
 
   // API: High-Precision Trailer Finder (TMDB & Invidious Proxy)
-  const trailerCache = new Map<string, { videoId: string; title: string; expires: number }>();
+  const trailerCache = new BoundedCache<string, { videoId: string; title: string; expires: number }>();
 
   app.get("/api/youtube-trailer", async (req, res) => {
     const title = (req.query.title as string) || "";
@@ -1069,8 +1098,8 @@ async function startServer() {
       let mediaType = type === "series" ? "tv" : "movie";
 
       // Method 1: Find via IMDb ID on TMDB API (with fast fallback)
-      if (imdbId && imdbId.startsWith("tt")) {
-        const findUrl = `https://api.themoviedb.org/3/find/${imdbId}?api_key=15d2fb673961e6702c2a9255b1230013&external_source=imdb_id`;
+      if (process.env.TMDB_API_KEY && /^tt\d+$/.test(imdbId)) {
+        const findUrl = `https://api.themoviedb.org/3/find/${imdbId}?api_key=${encodeURIComponent(process.env.TMDB_API_KEY || "")}&external_source=imdb_id`;
         const findResp = await fetch(findUrl, { signal: AbortSignal.timeout(1500) }).catch(() => null);
         if (findResp && findResp.ok) {
           const findData = await findResp.json();
@@ -1091,8 +1120,8 @@ async function startServer() {
       }
 
       // Method 2: If no tmdbId found by imdbId, search TMDB by title
-      if (!tmdbId && title) {
-        const searchUrl = `https://api.themoviedb.org/3/search/${mediaType}?api_key=15d2fb673961e6702c2a9255b1230013&query=${encodeURIComponent(title)}&language=it-IT`;
+      if (process.env.TMDB_API_KEY && !tmdbId && title) {
+        const searchUrl = `https://api.themoviedb.org/3/search/${mediaType}?api_key=${encodeURIComponent(process.env.TMDB_API_KEY || "")}&query=${encodeURIComponent(title)}&language=it-IT`;
         const searchResp = await fetch(searchUrl, { signal: AbortSignal.timeout(1500) }).catch(() => null);
         if (searchResp && searchResp.ok) {
           const searchData = await searchResp.json();
@@ -1105,8 +1134,8 @@ async function startServer() {
       if (tmdbId) {
         // Fetch Italian and English trailers concurrently for instant response
         const [vRespIt, vRespEn] = await Promise.all([
-          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=it-IT`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
-          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=15d2fb673961e6702c2a9255b1230013&language=en-US`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
+          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=${encodeURIComponent(process.env.TMDB_API_KEY || "")}&language=it-IT`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
+          fetch(`https://api.themoviedb.org/3/${mediaType}/${tmdbId}/videos?api_key=${encodeURIComponent(process.env.TMDB_API_KEY || "")}&language=en-US`, { signal: AbortSignal.timeout(2000) }).catch(() => null),
         ]);
 
         const vDataIt = vRespIt && vRespIt.ok ? await vRespIt.json() : null;
@@ -1156,7 +1185,7 @@ async function startServer() {
             });
 
             if (ytResp.ok) {
-              const html = await ytResp.text();
+              const html = await readTextLimited(ytResp);
               const match = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
               if (match && match[1]) {
                 const videoId = match[1];
@@ -1187,7 +1216,7 @@ async function startServer() {
 
   // Dedicated hidden official Cinemeta catalog route with high-performance bounded in-memory cache
   const INTERNAL_CATALOG_BASE = "https://v3-cinemeta.strem.io";
-  const catalogMemoryCache = new Map<string, { body: string; contentType: string; expires: number }>();
+  const catalogMemoryCache = new BoundedCache<string, { body: string; contentType: string; expires: number }>();
 
   // Helper to ensure in-memory caches never leak RAM (LRU bounded cap)
   function cacheSetBounded<K, V>(map: Map<K, V>, key: K, val: V, maxEntries = 250) {
@@ -1299,7 +1328,7 @@ async function startServer() {
         }
       }
 
-      let data = await response.text();
+      let data = await readTextLimited(response);
       // Automatically upgrade low-res posters to crystal-clear HD
       if (data.includes('images.metahub.space/poster/small/')) {
         data = data.replaceAll('images.metahub.space/poster/small/', 'images.metahub.space/poster/medium/');
@@ -1334,7 +1363,7 @@ async function startServer() {
   // Dedicated official TOP Streaming Italia addon route with caching
   // Exclusively configured using: https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c/manifest.json
   const TOP_STREAMING_BASE = "https://top-streaming.stream/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c";
-  const topStreamingMemoryCache = new Map<string, { body: string; contentType: string; expires: number }>();
+  const topStreamingMemoryCache = new BoundedCache<string, { body: string; contentType: string; expires: number }>();
 
   app.use("/api/addon/topstreaming", async (req, res) => {
     try {
@@ -1394,7 +1423,7 @@ async function startServer() {
         }
       }
 
-      let data = await response.text();
+      let data = await readTextLimited(response);
       // Automatically upgrade low-res posters to HD
       if (data.includes('image.tmdb.org/t/p/')) {
         data = data
@@ -1422,7 +1451,7 @@ async function startServer() {
   });
 
   // Dedicated FlixPatrol Popular Italy Top 10 Endpoint (https://flixpatrol.com/top10/streaming/italy/)
-  const flixpatrolMemoryCache = new Map<string, { body: string; expires: number }>();
+  const flixpatrolMemoryCache = new BoundedCache<string, { body: string; expires: number }>();
 
   // Canonical localized titles for Italian & top global productions
   const LOCALIZED_ITALIAN_TITLES: Record<string, string> = {
@@ -1591,7 +1620,8 @@ async function startServer() {
       res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
       const contentType = response.headers.get("content-type") || "application/json";
-      res.setHeader("Content-Type", contentType);
+      res.setHeader("Content-Type", contentType.includes("json") ? "application/json" : "text/plain; charset=utf-8");
+      res.setHeader("Cache-Control", "no-store");
 
       if (!response.ok) {
         return res.status(response.status).json({
@@ -1600,9 +1630,10 @@ async function startServer() {
         });
       }
 
-      const data = await response.text();
+      const data = await readTextLimited(response);
       res.send(data);
     } catch (err: any) {
+      if (err instanceof UnsafeTargetError) return res.status(400).json({ error: err.message });
       const isTimeout = err.name === "TimeoutError" || err.message?.includes("timeout") || err.name === "AbortError";
       if (isTimeout) {
         console.warn(`[Proxy Timeout] for ${targetUrl} (Upstream took > 25s): Returning empty streams`);
@@ -1625,7 +1656,7 @@ async function startServer() {
   });
 
   // Vite middleware in dev mode
-  if (process.env.NODE_ENV !== "production") {
+  if (process.env.NODE_ENV !== "production" && !process.argv[1]?.endsWith('server.cjs')) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
@@ -1636,8 +1667,6 @@ async function startServer() {
     const candidateDirs = [
       path.join(process.cwd(), "dist"),
       path.join(__dirname, "dist"),
-      path.join(__dirname),
-      process.cwd(),
     ];
     const distPath = candidateDirs.find((d) => fs.existsSync(path.join(d, "index.html"))) || path.join(process.cwd(), "dist");
 
@@ -1667,7 +1696,7 @@ async function startServer() {
             try {
               const resp = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0" } });
               if (resp.ok) {
-                const text = await resp.text();
+                const text = await readTextLimited(resp);
                 const subPath = new URL(url).pathname.replace("/a9ae14f1-04a0-4744-96c0-ebdb4041ba6c", "");
                 if (url.includes("top-streaming.stream")) {
                   topStreamingMemoryCache.set(`top_${subPath}`, { body: text, contentType: "application/json", expires: Date.now() + 60 * 60 * 1000 });
@@ -1683,4 +1712,4 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch((error) => { console.error("[Startup failed]", error); process.exitCode = 1; });

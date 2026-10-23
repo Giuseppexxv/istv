@@ -66,16 +66,18 @@ export default function App() {
         />
       )}
 
-      {/* Main Viewport: kept in standby hidden state during active playback to conserve RAM and CPU */}
+      {/* Keep browsing state while pausing its animations during playback. */}
       <main className={`relative z-10 flex-1 ${isPlayerActive ? 'hidden' : 'block'}`}>
         <div className={currentTab === 'library' ? 'hidden' : 'block'}>
           <CatalogBrowser
+            active={!isPlayerActive && currentTab !== 'library'}
             tab={currentTab === 'library' ? 'discover' : currentTab}
             searchQuery={searchQuery}
             onSearchChange={setSearchQuery}
             onSelectMedia={handleSelectMedia}
             onPlayStream={handlePlayStream}
             onPlayLiveChannel={(channel) => {
+              setActivePlayback(null);
               setActiveLiveChannel(channel);
             }}
           />
@@ -89,6 +91,11 @@ export default function App() {
         </div>
       </main>
 
+      <React.Suspense fallback={
+        <div role="status" aria-live="polite" className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center text-white">
+          Caricamento…
+        </div>
+      }>
       {/* Media Detail & Streams Modal */}
       {!isPlayerActive && selectedMedia && (
         <MediaDetailModal
@@ -118,6 +125,7 @@ export default function App() {
           onClose={() => setActiveLiveChannel(null)}
         />
       )}
+      </React.Suspense>
     </div>
   );
 }

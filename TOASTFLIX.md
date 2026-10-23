@@ -28,6 +28,12 @@ same browser share their result.
 upstream and total request time. HTTP Priority headers are hints to the upstream
 service; they do not grant this website privileged access to ToastFlix.
 
+The initial playback warning appears after one minute from the start of the
+attempt, including stream discovery. Early failures are held until that deadline;
+automatic source changes do not restart it. Actual playback cancels it, while
+Retry and a new episode begin a new minute. Errors after playback has started
+remain immediate.
+
 Only HTTP(S) video URLs are passed to the player. Streams are ranked before proxy
 encoding; duplicate URL/header combinations and trailers are removed. Required
 playback headers are preserved through the proxy. HLS relative paths resolve

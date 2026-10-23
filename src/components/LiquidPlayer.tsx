@@ -1,3 +1,4 @@
+import { createPlaybackStartup } from '../utils/playbackStartup';
 import { proxyVideoUrl } from '../../streamPolicy';
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Hls from 'hls.js';
@@ -305,6 +306,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     setActiveStream(null);
     setActiveVideo(target);
+    setResolutionAttempt(n => n + 1);
   }, [nextVideo, media.type, allVideos, activeVideo]);
 
   // Loading & Diagnostics
@@ -315,7 +317,20 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
   const [playbackError, setPlaybackError] = useState<string | null>(null);
 
   // Initial playback watchdog timer ref.
-  const startupWatchdogRef = useRef<any>(null);
+  const startupWatchdogRef = useRef<ReturnType<typeof createPlaybackStartup> | null>(null);
+
+  useEffect(() => {
+    setPlaybackError(null);
+    const startup = createPlaybackStartup((message) => {
+      setIsLoading(false);
+      setPlaybackError(message);
+    });
+    startupWatchdogRef.current = startup;
+    return () => {
+      startup.dispose();
+      if (startupWatchdogRef.current === startup) startupWatchdogRef.current = null;
+    };
+  }, [media.id, resolutionAttempt]);
 
   // Indicates when the player hasn't started yet and stays at zero / buffering (show rotella)
   const isWaitingToStart = isLoading || !hasStartedPlayback || (currentTime <= 0.2 && !isPlaying);
@@ -538,8 +553,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         setAvailableStreams(streams || []);
 
         if (!streams.length) {
-          setIsLoading(false);
-          setPlaybackError('Nessun flusso disponibile. Riprova tra poco o scegli un altro titolo.');
+          startupWatchdogRef.current?.reportFailure('Nessun flusso disponibile dopo un minuto. Riprova tra poco o scegli un altro titolo.');
           return;
         }
         if (streams && streams.length > 0) {
@@ -549,8 +563,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
         }
       } catch (err: any) {
         if (isCancelled) return;
-        setIsLoading(false);
-        setPlaybackError('Impossibile trovare un flusso. Riprova tra poco.');
+        startupWatchdogRef.current?.reportFailure('Impossibile trovare un flusso dopo un minuto. Riprova tra poco.');
       }
     }
 
@@ -576,21 +589,8 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     setIsLoading(true);
     setHasStartedPlayback(false);
-    setPlaybackError(null);
     setAudioTracks([]);
     setQualityLevels([]);
-
-    // Report a stalled startup instead of displaying a spinner indefinitely.
-    if (startupWatchdogRef.current) {
-      clearTimeout(startupWatchdogRef.current);
-      startupWatchdogRef.current = null;
-    }
-
-    if (activeStream.url) startupWatchdogRef.current = setTimeout(() => {
-      startupWatchdogRef.current = null;
-      setIsLoading(false);
-      setPlaybackError('Il flusso non risponde. Puoi riprovare o cambiare sorgente dalle impostazioni.');
-    }, 30000);
 
     // Save to watch history with full metadata and preserved subtitle settings
     hasResumedRef.current = false;
@@ -816,10 +816,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
 
     return () => {
       disposed = true;
-      if (startupWatchdogRef.current) {
-        clearTimeout(startupWatchdogRef.current);
-        startupWatchdogRef.current = null;
-      }
       if (!isTransitioningRef.current && videoRef.current && videoRef.current.currentTime > 5) {
         stremioService.savePlaybackProgress(
           media.id,
@@ -1325,10 +1321,7 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (videoRef.current && videoRef.current.currentTime > 0.1) {
                   setHasStartedPlayback(true);
                 }
-                if (startupWatchdogRef.current) {
-                  clearTimeout(startupWatchdogRef.current);
-                  startupWatchdogRef.current = null;
-                }
+                startupWatchdogRef.current?.complete();
                 resetControlsTimeout();
               }}
               onLoadedMetadata={() => {
@@ -1354,13 +1347,10 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                   setCurrentTime(cur);
                   setDuration(dur);
 
-                  if (cur > 0.2) {
+                  if (cur > 0.2 && !videoRef.current.paused && videoRef.current.readyState >= 3) {
                     setHasStartedPlayback(true);
                     setIsLoading(false);
-                    if (startupWatchdogRef.current) {
-                      clearTimeout(startupWatchdogRef.current);
-                      startupWatchdogRef.current = null;
-                    }
+                    startupWatchdogRef.current?.complete();
                   }
 
                   // Reliable auto-advance to next episode ONLY when actively playing and reached end
@@ -1394,13 +1384,6 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
               onCanPlay={() => {
                 setIsLoading(false);
                 setPlaybackError(null);
-                if (videoRef.current && videoRef.current.currentTime > 0.1) {
-                  setHasStartedPlayback(true);
-                  if (startupWatchdogRef.current) {
-                    clearTimeout(startupWatchdogRef.current);
-                    startupWatchdogRef.current = null;
-                  }
-                }
                 if (!hasResumedRef.current) {
                   checkAndApplyResume();
                 }
@@ -1409,15 +1392,14 @@ export const LiquidPlayer: React.FC<LiquidPlayerProps> = ({
                 if (isClosingRef.current || isTransitioningRef.current || !videoRef.current?.src) {
                   return;
                 }
-                // Se siamo ancora nei 20 secondi iniziali di avvio, ritenta senza dare subito errore
-                if (startupWatchdogRef.current) {
+                // Keep the one-minute startup window before showing an initial playback warning.
+                if (startupWatchdogRef.current?.waiting) {
                   try {
                     videoRef.current?.load();
                   } catch {}
                   return;
                 }
-                setIsLoading(false);
-                setPlaybackError(
+                startupWatchdogRef.current?.reportFailure(
                   'Impossibile riprodurre il flusso. Il server sorgente potrebbe essere temporaneamente occupato.'
                 );
               }}

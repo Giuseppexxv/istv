@@ -3,6 +3,7 @@ import express from "express";
 import { safeFetch as fetch, readTextLimited, sanitizeHeaders, UnsafeTargetError } from "./network";
 import { createApiGuard } from './apiGuard';
 import { BoundedCache } from './cache';
+import { StreamQueueFullError } from './streamQueue';
 import { createToastFlixClient, TOASTFLIX_BASE } from "./toastflix";
 import path from "path";
 import fs from "fs";
@@ -34,11 +35,12 @@ async function startServer() {
   });
   app.use('/api', createApiGuard());
 
-  // Global High-Priority & Performance Headers for all API routes (RFC 9218 HTTP Priority standard)
-  app.use("/api/*", (_req, res, next) => {
-    res.setHeader("Priority", "u=0, i"); // Urgent priority, incremental
-    res.setHeader("X-API-Priority", "ultra-high");
-    res.setHeader("Connection", "keep-alive");
+  // Playback has higher urgency than catalog and speculative loading.
+  app.use("/api/*", (req, res, next) => {
+    const preload = req.query.intent === 'preload';
+    const playback = req.originalUrl.startsWith('/api/addon/stream') && !preload;
+    const media = req.originalUrl.startsWith('/api/stream-proxy');
+    res.setHeader('Priority', preload ? 'u=6' : playback ? 'u=0' : media ? 'u=1, i' : 'u=5');
     next();
   });
 
@@ -1572,7 +1574,13 @@ async function startServer() {
       return res.status(400).json({ error: 'Invalid stream resource' });
     }
     try {
-      const data = await requestToastFlix(resource);
+      const data = await requestToastFlix(resource, {
+        intent: req.query.intent === 'preload' ? 'preload' : 'play',
+        onTiming(timing) {
+          res.setHeader('X-ToastFlix-Cache', timing.cache.toUpperCase());
+          res.setHeader('Server-Timing', `queue;dur=${timing.queueMs.toFixed(1)}, toastflix;dur=${timing.upstreamMs.toFixed(1)}, total;dur=${timing.totalMs.toFixed(1)}`);
+        },
+      });
       if (resource === '/manifest.json') {
         return res.json({ ...data, id: 'toastflix.addon.it', name: 'ToastFlix 🥪',
           description: 'Flussi diretti in italiano, con preferenza 1080p HLS.',
@@ -1581,6 +1589,10 @@ async function startServer() {
       }
       return res.json(data);
     } catch (error: any) {
+      if (error instanceof StreamQueueFullError) {
+        res.setHeader('Retry-After', '1');
+        return res.status(503).json({ error: 'Stream discovery busy; retry shortly', streams: [] });
+      }
       console.warn('[ToastFlix]', error.message);
       return res.status(502).json({ error: 'ToastFlix temporarily unavailable', streams: [] });
     }

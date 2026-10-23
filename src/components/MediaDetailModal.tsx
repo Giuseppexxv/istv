@@ -271,7 +271,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     setInLibrary(stremioService.isInLibrary(item.id));
 
     // Preload stream immediately in background for zero-wait playback
-    stremioService.preloadStream(item.type, item.id);
+    if (item.type !== 'series') stremioService.preloadStream(item.type, item.id);
 
     // Enrich metadata in background without overwriting valid Italian title or cover/backdrop
     stremioService

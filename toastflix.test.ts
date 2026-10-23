@@ -51,3 +51,26 @@ test('rejects malformed upstream payloads', async () => {
   const client = createToastFlixClient((async () => Response.json({ streams: 'invalid' })) as typeof fetch);
   await assert.rejects(client('/stream/movie/tt123.json'), /Invalid/);
 });
+
+test('a play click promotes a pending preload while sharing the same upstream request', async () => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const calls: Array<{ url: string; priority: string | null }> = [];
+  const timings: string[] = [];
+  const client = createToastFlixClient((async (url, init) => {
+    calls.push({ url: String(url), priority: new Headers(init?.headers).get('priority') });
+    if (String(url).includes('tt111')) await held;
+    return Response.json({ streams: [{ url: 'https://cdn.test/video.m3u8' }] });
+  }) as typeof fetch);
+  const a = client('/stream/movie/tt111.json', { intent: 'preload' });
+  const b = client('/stream/movie/tt222.json', { intent: 'preload' });
+  const play = client('/stream/movie/tt222.json', { onTiming: t => timings.push(t.cache) });
+  await play;
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].priority, 'u=0');
+  release();
+  await Promise.all([a, b]);
+  await client('/stream/movie/tt222.json', { onTiming: t => timings.push(t.cache) });
+  assert.deepEqual(timings, ['shared', 'hit']);
+  assert.equal(calls.length, 2);
+});

@@ -40,12 +40,15 @@ export const publicLookup: typeof lookup = ((hostname: string, options: any, cal
 
 const dispatcher = new Agent({ connect: { lookup: publicLookup }, connections: 8,
   keepAliveTimeout: 10000, keepAliveMaxTimeout: 30000 });
+// ToastFlix stream discovery must not queue behind media segments from that host.
+const discoveryDispatcher = new Agent({ connect: { lookup: publicLookup }, connections: 4,
+  keepAliveTimeout: 30000, keepAliveMaxTimeout: 30000 });
 
-export async function safeFetch(input: string | URL, init: RequestInit = {}, requester = upstreamFetch): Promise<Response> {
+export async function safeFetch(input: string | URL, init: RequestInit = {}, requester = upstreamFetch, transport = dispatcher): Promise<Response> {
   let target = validateTarget(String(input));
   const headers = new Headers(init.headers);
   for (let redirects = 0; redirects <= 5; redirects++) {
-    const response = await requester(target, { ...init, signal: init.signal ?? AbortSignal.timeout(15000), headers, redirect: 'manual', dispatcher } as any);
+    const response = await requester(target, { ...init, signal: init.signal ?? AbortSignal.timeout(15000), headers, redirect: 'manual', dispatcher: transport } as any);
     if (![301, 302, 303, 307, 308].includes(response.status)) return response as unknown as Response;
     const location = response.headers.get('location');
     if (!location) return response as unknown as Response;
@@ -58,6 +61,10 @@ export async function safeFetch(input: string | URL, init: RequestInit = {}, req
     target = next;
   }
   throw new Error('Too many upstream redirects');
+}
+
+export function fetchStreamDiscovery(input: string | URL, init: RequestInit = {}): Promise<Response> {
+  return safeFetch(input, init, upstreamFetch, discoveryDispatcher);
 }
 
 export async function readTextLimited(response: Response, maxBytes = 5 * 1024 * 1024): Promise<string> {

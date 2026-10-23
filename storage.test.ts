@@ -29,4 +29,21 @@ test('library synchronizes across tabs and clears; episode progress never alters
   assert.equal(stremioService.getHistory()[0].currentTime, 10);
   storage.set('liquid_stremio_history_v1', JSON.stringify([null, {}, { id: 'tt3', name: 'Valid' }]));
   assert.equal(stremioService.getHistory().length, 1);
+
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = (async (_url, init) => {
+    calls++;
+    assert.equal(init?.priority, 'high');
+    await new Promise(resolve => setImmediate(resolve));
+    return Response.json({ streams: [{ url: 'https://cdn.test/video.m3u8' }] });
+  }) as typeof fetch;
+  try {
+    const [a, b] = await Promise.all([stremioService.fetchStreams('movie', 'tt444'), stremioService.fetchStreams('movie', 'tt444')]);
+    assert.equal(calls, 1);
+    assert.deepEqual(a, b);
+    assert.ok(a[0].url?.startsWith('/api/stream-proxy?'));
+    await stremioService.fetchStreams('movie', 'tt444');
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
 });
